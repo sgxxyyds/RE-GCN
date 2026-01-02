@@ -139,17 +139,27 @@ class TemporalConstraintGraph(nn.Module):
         if len(constraint_pairs) == 0:
             return torch.zeros(1, device=fact_embs.device)
         
-        loss = torch.zeros(1, device=fact_embs.device)
+        # 批量计算距离以提高效率
+        valid_pairs = [(i, j) for i, j in constraint_pairs if i < len(fact_embs) and j < len(fact_embs)]
         
-        for i, j in constraint_pairs:
-            if i < len(fact_embs) and j < len(fact_embs):
-                fi = fact_embs[i]
-                fj = fact_embs[j]
-                # 互斥事实的表示应该尽量不同
-                distance = torch.norm(fi - fj, p=2)
-                loss = loss + torch.clamp(self.margin - distance, min=0)
+        if len(valid_pairs) == 0:
+            return torch.zeros(1, device=fact_embs.device)
         
-        return loss / max(len(constraint_pairs), 1)
+        # 提取所有需要计算的索引
+        idx_i = torch.tensor([p[0] for p in valid_pairs], device=fact_embs.device)
+        idx_j = torch.tensor([p[1] for p in valid_pairs], device=fact_embs.device)
+        
+        # 批量获取事实表示
+        fi = fact_embs[idx_i]  # [num_pairs, h_dim*3]
+        fj = fact_embs[idx_j]  # [num_pairs, h_dim*3]
+        
+        # 批量计算 L2 距离
+        distances = torch.norm(fi - fj, p=2, dim=1)  # [num_pairs]
+        
+        # 计算 margin loss
+        loss = torch.clamp(self.margin - distances, min=0).sum()
+        
+        return loss / len(valid_pairs)
     
     def detect_mutex_constraints(self, triples, rel_mutex_pairs=None):
         """
