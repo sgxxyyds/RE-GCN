@@ -104,6 +104,8 @@ class TemporalPositionEncoder(nn.Module):
         total_steps: 总时间步数
         """
         # 计算相对时间位置（使用余弦编码）
+        # relative_pos = total_steps - time_step + 1: 越早的时间步位置值越大，
+        # 这样更近的历史时间步有较小的位置值，使得位置编码能区分时间远近
         relative_pos = total_steps - time_step + 1
         time_encoding = torch.cos(self.weight_t * relative_pos + self.bias_t)
         time_encoding = time_encoding.expand(h.size(0), -1)  # [num_ents, h_dim]
@@ -230,6 +232,7 @@ class RecurrentRGCN(nn.Module):
         history_embs = []
         
         # RFE: 初始化关系频率计数
+        # num_rels * 2: 包括原始关系和逆关系（bidirectional relations）
         if self.use_rfe:
             rel_freq = torch.zeros(self.num_rels * 2).float()
             if use_cuda:
@@ -240,6 +243,7 @@ class RecurrentRGCN(nn.Module):
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
             temp_e = self.h[g.r_to_e]
+            # num_rels * 2: 包括原始关系和逆关系（bidirectional relations）
             x_input = torch.zeros(self.num_rels * 2, self.h_dim).float().cuda() if use_cuda else torch.zeros(self.num_rels * 2, self.h_dim).float()
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1],:]
@@ -261,7 +265,7 @@ class RecurrentRGCN(nn.Module):
             
             # ========== RFE: 关系频率增强 ==========
             if self.use_rfe:
-                # 归一化频率
+                # 归一化频率，加1e-8防止除零
                 normalized_freq = rel_freq / (rel_freq.sum() + 1e-8)
                 self.h_0 = self.rfe(self.h_0, normalized_freq)
                 self.h_0 = F.normalize(self.h_0) if self.layer_norm else self.h_0
