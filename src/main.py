@@ -181,14 +181,9 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         use_cuda=use_cuda,
                         gpu = args.gpu,
                         analysis=args.run_analysis,
-                        # 新增：三种辅助信息图增强参数
-                        use_tig=args.use_tig,
-                        tig_threshold=args.tig_threshold,
-                        use_tcdg=args.use_tcdg,
-                        tcdg_max_delta=args.tcdg_max_delta,
-                        use_tcg=args.use_tcg,
-                        tcg_margin=args.tcg_margin,
-                        tcg_weight=args.tcg_weight)
+                        # 新增：关系频率增强和时间位置编码参数
+                        use_rfe=args.use_rfe,
+                        use_tpe=args.use_tpe)
 
     if use_cuda:
         torch.cuda.set_device(args.gpu)
@@ -240,8 +235,8 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 # generate history graph
                 history_glist = [build_sub_graph(num_nodes, num_rels, snap, use_cuda, args.gpu) for snap in input_list]
                 output = [torch.from_numpy(_).long().cuda() for _ in output] if use_cuda else [torch.from_numpy(_).long() for _ in output]
-                loss_e, loss_r, loss_static, loss_constraint = model.get_loss(history_glist, output[0], static_graph, use_cuda)
-                loss = args.task_weight*loss_e + (1-args.task_weight)*loss_r + loss_static + loss_constraint
+                loss_e, loss_r, loss_static = model.get_loss(history_glist, output[0], static_graph, use_cuda)
+                loss = args.task_weight*loss_e + (1-args.task_weight)*loss_r + loss_static
 
                 losses.append(loss.item())
                 losses_e.append(loss_e.item())
@@ -410,26 +405,14 @@ if __name__ == '__main__':
     parser.add_argument("--num-k", type=int, default=500,
                         help="number of triples generated")
 
-    # ========== 新增：三种辅助信息图增强参数 ==========
-    # 方案一：时间一致性破坏图（TIG）
-    parser.add_argument("--use-tig", action='store_true', default=False,
-                        help="use Temporal Inconsistency Graph for break edge detection")
-    parser.add_argument("--tig-threshold", type=float, default=0.5,
-                        help="threshold for TIG break edge detection (Jaccard distance)")
+    # ========== 新增：关系频率增强和时间位置编码参数 ==========
+    # 关系频率增强（RFE）
+    parser.add_argument("--use-rfe", action='store_true', default=False,
+                        help="use Relation Frequency Enhancer for relation representation enhancement")
     
-    # 方案二：时间因果依赖图（TCDG）
-    parser.add_argument("--use-tcdg", action='store_true', default=False,
-                        help="use Temporal Causal Dependency Graph for relation causal aggregation")
-    parser.add_argument("--tcdg-max-delta", type=int, default=3,
-                        help="maximum time delta for TCDG causal aggregation")
-    
-    # 方案三：时间约束图（TCG）
-    parser.add_argument("--use-tcg", action='store_true', default=False,
-                        help="use Temporal Constraint Graph for mutex constraint loss")
-    parser.add_argument("--tcg-margin", type=float, default=1.0,
-                        help="margin for TCG constraint loss")
-    parser.add_argument("--tcg-weight", type=float, default=0.1,
-                        help="weight for TCG constraint loss")
+    # 时间位置编码（TPE）
+    parser.add_argument("--use-tpe", action='store_true', default=False,
+                        help="use Temporal Position Encoder for temporal position encoding")
 
 
     args = parser.parse_args()
