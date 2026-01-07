@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import dgl
 
-# from hisres-rgcn.layers import RGCNBlockLayer as RGCNLayer
+# from hisres_rgcn.layers import RGCNBlockLayer as RGCNLayer
 from hisres_rgcn.layers import UnionRGCNLayer, RGCNBlockLayer, CandRGCNLayer
 from hisres_src.model import BaseRGCN
 from hisres_src.decoder import *
