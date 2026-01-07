@@ -11,13 +11,13 @@ import torch
 from tqdm import tqdm
 import random
 sys.path.append("..")
-from rgcn import utils
-from rgcn.utils import build_sub_graph
-from src.rrgcn import RecurrentRGCN
-# from src.hyperparameter_range import *
+from hisres_rgcn import utils
+from hisres_rgcn.utils import build_sub_graph
+from hisres_src.hisres import RecurrentRGCN
+# from hisres_src.hyperparameter_range import *
 import torch.nn.modules.rnn
 from collections import defaultdict
-from rgcn.knowledge_graph import _read_triplets_as_list
+from hisres_rgcn.knowledge_graph import _read_triplets_as_list
 # python
 from setproctitle import setproctitle
 import scipy.sparse as sp
