@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import dgl
 from tqdm import tqdm
-import rgcn.knowledge_graph as knwlgrh
+import hisres_rgcn.knowledge_graph as knwlgrh
 from collections import defaultdict
 
 

@@ -6,11 +6,11 @@ import torch.nn.functional as F
 import numpy as np
 import dgl
 
-# from rgcn.layers import RGCNBlockLayer as RGCNLayer
-from rgcn.layers import UnionRGCNLayer, RGCNBlockLayer, CandRGCNLayer
-from src.model import BaseRGCN
-from src.decoder import *
-from rgcn.utils import build_his_graph
+# from hisres-rgcn.layers import RGCNBlockLayer as RGCNLayer
+from hisres_rgcn.layers import UnionRGCNLayer, RGCNBlockLayer, CandRGCNLayer
+from hisres_src.model import BaseRGCN
+from hisres_src.decoder import *
+from hisres_rgcn.utils import build_his_graph
 
 class RGCNCell(BaseRGCN):
     def build_hidden_layer(self, idx):
