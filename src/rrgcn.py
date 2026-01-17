@@ -52,78 +52,13 @@ class RGCNCell(BaseRGCN):
             return g.ndata.pop('h')
 
 
-class RelationFrequencyEnhancer(nn.Module):
-    """
-    关系频率增强模块（Relation Frequency Enhancer, RFE）
-    利用历史关系出现频率信息增强关系表示
-    """
-    def __init__(self, num_rels, h_dim):
-        super(RelationFrequencyEnhancer, self).__init__()
-        self.num_rels = num_rels
-        self.h_dim = h_dim
-        
-        # 频率编码投影层
-        self.freq_proj = nn.Linear(1, h_dim)
-        # 融合层
-        self.fusion_layer = nn.Linear(h_dim * 2, h_dim)
-        
-    def forward(self, rel_emb, rel_freq):
-        """
-        rel_emb: 关系嵌入 [num_rels*2, h_dim]
-        rel_freq: 关系频率 [num_rels*2]
-        """
-        # 将频率转换为嵌入
-        freq_emb = self.freq_proj(rel_freq.unsqueeze(1))  # [num_rels*2, h_dim]
-        # 融合原始关系嵌入和频率嵌入
-        combined = torch.cat([rel_emb, freq_emb], dim=1)  # [num_rels*2, h_dim*2]
-        enhanced_rel = self.fusion_layer(combined)  # [num_rels*2, h_dim]
-        return enhanced_rel
-
-
-class TemporalPositionEncoder(nn.Module):
-    """
-    时间位置编码模块（Temporal Position Encoder, TPE）
-    为不同时间位置的快照添加位置编码
-    """
-    def __init__(self, h_dim, max_seq_len=50):
-        super(TemporalPositionEncoder, self).__init__()
-        self.h_dim = h_dim
-        self.max_seq_len = max_seq_len
-        
-        # 可学习的时间位置编码
-        self.weight_t = nn.Parameter(torch.randn(1, h_dim))
-        self.bias_t = nn.Parameter(torch.randn(1, h_dim))
-        
-        # 时间融合层
-        self.time_linear = nn.Linear(2 * h_dim, h_dim)
-        
-    def forward(self, h, time_step, total_steps):
-        """
-        h: 实体嵌入 [num_ents, h_dim]
-        time_step: 当前时间步位置
-        total_steps: 总时间步数
-        """
-        # 计算相对时间位置（使用余弦编码）
-        # relative_pos = total_steps - time_step + 1: 越早的时间步位置值越大，
-        # 这样更近的历史时间步有较小的位置值，使得位置编码能区分时间远近
-        relative_pos = total_steps - time_step + 1
-        time_encoding = torch.cos(self.weight_t * relative_pos + self.bias_t)
-        time_encoding = time_encoding.expand(h.size(0), -1)  # [num_ents, h_dim]
-        
-        # 融合实体嵌入和时间编码
-        combined = torch.cat([h, time_encoding], dim=1)  # [num_ents, h_dim*2]
-        enhanced_h = self.time_linear(combined)  # [num_ents, h_dim]
-        return enhanced_h
-
 
 class RecurrentRGCN(nn.Module):
     def __init__(self, decoder_name, encoder_name, num_ents, num_rels, num_static_rels, num_words, h_dim, opn, sequence_len, num_bases=-1, num_basis=-1,
                  num_hidden_layers=1, dropout=0, self_loop=False, skip_connect=False, layer_norm=False, input_dropout=0,
                  hidden_dropout=0, feat_dropout=0, aggregation='cat', weight=1, discount=0, angle=0, use_static=False,
                  entity_prediction=False, relation_prediction=False, use_cuda=False,
-                 gpu = 0, analysis=False,
-                 # 新增：关系频率增强和时间位置编码参数
-                 use_rfe=False, use_tpe=False):
+                 gpu = 0, analysis=False):
         super(RecurrentRGCN, self).__init__()
 
         self.decoder_name = decoder_name
@@ -148,10 +83,6 @@ class RecurrentRGCN(nn.Module):
         self.entity_prediction = entity_prediction
         self.emb_rel = None
         self.gpu = gpu
-
-        # 新增：辅助信息增强开关
-        self.use_rfe = use_rfe
-        self.use_tpe = use_tpe
 
         self.w1 = torch.nn.Parameter(torch.Tensor(self.h_dim, self.h_dim), requires_grad=True).float()
         torch.nn.init.xavier_normal_(self.w1)
@@ -204,15 +135,7 @@ class RecurrentRGCN(nn.Module):
             self.decoder_ob = ConvTransE(num_ents, h_dim, input_dropout, hidden_dropout, feat_dropout)
             self.rdecoder = ConvTransR(num_rels, h_dim, input_dropout, hidden_dropout, feat_dropout)
         else:
-            raise NotImplementedError
-        
-        # ========== 关系频率增强模块（RFE）==========
-        if self.use_rfe:
-            self.rfe = RelationFrequencyEnhancer(num_rels, h_dim)
-        
-        # ========== 时间位置编码模块（TPE）==========
-        if self.use_tpe:
-            self.tpe = TemporalPositionEncoder(h_dim, max_seq_len=sequence_len)
+            raise NotImplementedError 
 
     def forward(self, g_list, static_graph, use_cuda):
         gate_list = []
@@ -230,30 +153,15 @@ class RecurrentRGCN(nn.Module):
             static_emb = None
 
         history_embs = []
-        
-        # RFE: 初始化关系频率计数
-        # num_rels * 2: 包括原始关系和逆关系（bidirectional relations）
-        if self.use_rfe:
-            rel_freq = torch.zeros(self.num_rels * 2).float()
-            if use_cuda:
-                rel_freq = rel_freq.cuda().to(self.gpu)
-
-        total_steps = len(g_list)
 
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
             temp_e = self.h[g.r_to_e]
-            # num_rels * 2: 包括原始关系和逆关系（bidirectional relations）
             x_input = torch.zeros(self.num_rels * 2, self.h_dim).float().cuda() if use_cuda else torch.zeros(self.num_rels * 2, self.h_dim).float()
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1],:]
                 x_mean = torch.mean(x, dim=0, keepdim=True)
                 x_input[r_idx] = x_mean
-                
-                # RFE: 累计关系频率
-                if self.use_rfe:
-                    rel_freq[r_idx] += 1
-                    
             if i == 0:
                 x_input = torch.cat((self.emb_rel, x_input), dim=1)
                 self.h_0 = self.relation_cell_1(x_input, self.emb_rel)    # 第1层输入
@@ -262,27 +170,11 @@ class RecurrentRGCN(nn.Module):
                 x_input = torch.cat((self.emb_rel, x_input), dim=1)
                 self.h_0 = self.relation_cell_1(x_input, self.h_0)  # 第2层输出==下一时刻第一层输入
                 self.h_0 = F.normalize(self.h_0) if self.layer_norm else self.h_0
-            
-            # ========== RFE: 关系频率增强 ==========
-            if self.use_rfe:
-                # 归一化频率，加1e-8防止除零
-                normalized_freq = rel_freq / (rel_freq.sum() + 1e-8)
-                self.h_0 = self.rfe(self.h_0, normalized_freq)
-                self.h_0 = F.normalize(self.h_0) if self.layer_norm else self.h_0
-            
             current_h = self.rgcn.forward(g, self.h, [self.h_0, self.h_0])
             current_h = F.normalize(current_h) if self.layer_norm else current_h
-            
-            # ========== TPE: 时间位置编码增强 ==========
-            if self.use_tpe:
-                current_h = self.tpe(current_h, i, total_steps)
-                current_h = F.normalize(current_h) if self.layer_norm else current_h
-            
-            time_weight = torch.sigmoid(torch.mm(self.h, self.time_gate_weight) + self.time_gate_bias)
-            
+            time_weight = F.sigmoid(torch.mm(self.h, self.time_gate_weight) + self.time_gate_bias)
             self.h = time_weight * current_h + (1-time_weight) * self.h
             history_embs.append(self.h)
-                
         return history_embs, static_emb, self.h_0, gate_list, degree_list
 
 
@@ -351,5 +243,4 @@ class RecurrentRGCN(nn.Module):
                         sim_matrix = sim_matrix / c
                     mask = (math.cos(step) - sim_matrix) > 0
                     loss_static += self.weight * torch.sum(torch.masked_select(math.cos(step) - sim_matrix, mask))
-        
         return loss_ent, loss_rel, loss_static
