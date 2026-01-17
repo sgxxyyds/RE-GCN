@@ -1,13 +1,13 @@
-# Hyperbolic Temporal RE-GCN: Temporal Knowledge Graph Reasoning in Hyperbolic Space
+# 双曲时序 RE-GCN：双曲空间中的时序知识图谱推理
 
-This repository implements **Hyperbolic Temporal RE-GCN**, an enhanced temporal knowledge graph completion model that combines RE-GCN with hyperbolic space geometry for improved hierarchical representation learning.
+本仓库实现了 **双曲时序 RE-GCN**，这是一个增强的时序知识图谱补全模型，将 RE-GCN 与双曲空间几何相结合，以提升层次化表示学习效果。
 
-Based on the original RE-GCN paper:
+基于原始 RE-GCN 论文：
 Zixuan Li, Xiaolong Jin, Wei Li, Saiping Guan, Jiafeng Guo, Huawei Shen, Yuanzhuo Wang and Xueqi Cheng. [Temporal Knowledge Graph Reasoning Based on Evolutional Representation Learning](https://arxiv.org/abs/2104.10353). SIGIR 2021.
 
-## Model Architecture
+## 模型架构
 
-The Hyperbolic Temporal RE-GCN model architecture:
+双曲时序 RE-GCN 的模型架构：
 
 ```
 Hyperbolic Entity Embeddings (Poincaré Ball)
@@ -25,35 +25,35 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 [ Decoder for TKGC ]
 ```
 
-## Key Improvements
+## 关键改进
 
-### 1. Hyperbolic Entity Embeddings
-- Uses the **Poincaré Ball Model** for entity representations
-- Radius represents semantic abstraction level (larger radius = more specific concepts)
-- Curvature parameter `c = 0.01` (fixed for stability)
+### 1. 双曲实体嵌入
+- 使用 **庞加莱球模型** 表示实体
+- 半径表示语义抽象层级（半径越大 = 概念越具体）
+- 曲率参数 `c = 0.01`（为稳定性固定）
 
-### 2. Temporal Radius Evolution
-- Learnable mechanism to adjust entity semantic levels across time
-- Models how entities evolve from abstract to specific (or vice versa) over time
-- Formula: `h_e^(t+1) = exp_0(W_Δt · log_0(h_e^(t)))`
+### 2. 时间半径演化
+- 可学习机制，用于跨时间调整实体语义层级
+- 建模实体随时间从抽象到具体（或相反）的演化
+- 公式：`h_e^(t+1) = exp_0(W_Δt · log_0(h_e^(t)))`
 
-### 3. Hyperbolic RE-GCN
-- Graph convolution operates in **tangent space** for numerical stability
-- Workflow:
-  1. Map nodes to tangent space: `log_0(h)`
-  2. Apply RGCN aggregation
-  3. Map back to hyperbolic space: `exp_0(h')`
+### 3. 双曲 RE-GCN
+- 图卷积在 **切空间** 中进行以保证数值稳定
+- 流程：
+  1. 将节点映射到切空间：`log_0(h)`
+  2. 应用 RGCN 聚合
+  3. 映射回双曲空间：`exp_0(h')`
 
-### 4. Hyperbolic GRU
-- Temporal smoothing using GRU operations in hyperbolic space
-- Maintains hierarchical structure during temporal evolution
-- Separates structure propagation (GCN) from temporal memory (GRU)
+### 4. 双曲 GRU
+- 在双曲空间中使用 GRU 操作进行时间平滑
+- 在时序演化中保持层次结构
+- 将结构传播（GCN）与时间记忆（GRU）分离
 
-### 5. Euclidean Decoder
-- Stable scoring in tangent space using ConvTransE/DistMult
-- Score function: `f(s,r,o,t) = <log_0(h_s), R_r, log_0(h_o)>`
+### 5. 欧式解码器
+- 在切空间中使用 ConvTransE/DistMult 进行稳定打分
+- 评分函数：`f(s,r,o,t) = <log_0(h_s), R_r, log_0(h_o)>`
 
-## Project Structure
+## 项目结构
 
 ```
 ├── hyperbolic_src/           # Hyperbolic Temporal RE-GCN (NEW)
@@ -68,16 +68,16 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 └── models/                   # Model checkpoints
 ```
 
-## Quick Start
+## 快速开始
 
-### Environment Setup
+### 环境设置
 ```bash
 conda create -n hyperbolic-regcn python=3.7
 conda activate hyperbolic-regcn
 pip install -r requirement.txt
 ```
 
-### Data Preparation
+### 数据准备
 ```bash
 tar -zxvf data-release.tar.gz
 
@@ -86,7 +86,7 @@ cd ./data/<dataset>
 python ent2word.py
 ```
 
-### Train Hyperbolic Temporal RE-GCN
+### 训练双曲时序 RE-GCN
 
 ```bash
 mkdir models
@@ -106,7 +106,12 @@ python hyperbolic_main.py -d ICEWS14s \
     --gpu 0
 ```
 
-### Train with Static Graph
+后台运行示例：
+```bash
+nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 > train.log 2>&1 &
+```
+
+### 使用静态图训练
 ```bash
 python hyperbolic_main.py -d ICEWS14s \
     --train-history-len 3 \
@@ -125,22 +130,22 @@ python hyperbolic_main.py -d ICEWS14s \
     --gpu 0
 ```
 
-### Key Parameters
+### 关键参数
 
-| Parameter | Description | Default |
+| 参数 | 说明 | 默认值 |
 |-----------|-------------|---------|
-| `--curvature` | Curvature of hyperbolic space | 0.01 |
-| `--hyperbolic-lr-ratio` | Learning rate ratio for hyperbolic params | 0.1 |
-| `--n-hidden` | Hidden dimension | 200 |
-| `--n-layers` | Number of GCN layers | 2 |
-| `--train-history-len` | Training history length | 10 |
-| `--test-history-len` | Testing history length | 20 |
-| `--encoder` | Encoder type | hyperbolic_uvrgcn |
-| `--decoder` | Decoder type | hyperbolic_convtranse |
+| `--curvature` | 双曲空间曲率 | 0.01 |
+| `--hyperbolic-lr-ratio` | 双曲参数的学习率比例 | 0.1 |
+| `--n-hidden` | 隐藏维度 | 200 |
+| `--n-layers` | GCN 层数 | 2 |
+| `--train-history-len` | 训练历史长度 | 10 |
+| `--test-history-len` | 测试历史长度 | 20 |
+| `--encoder` | 编码器类型 | hyperbolic_uvrgcn |
+| `--decoder` | 解码器类型 | hyperbolic_convtranse |
 
-### Evaluate Models
+### 评估模型
 
-Add the `--test` flag to evaluate a pre-trained model:
+添加 `--test` 标志以评估预训练模型：
 
 ```bash
 # Single-step inference
@@ -174,40 +179,40 @@ python hyperbolic_main.py -d ICEWS14s \
     --topk 10
 ```
 
-## Mathematical Foundation
+## 数学基础
 
-### Poincaré Ball Model
+### 庞加莱球模型
 
-The Poincaré ball is defined as:
+庞加莱球定义为：
 ```
 D_c^d = {x ∈ R^d : c||x||² < 1}
 ```
 
-### Exponential Map at Origin
+### 原点处的指数映射
 ```
 exp_0(v) = tanh(√c ||v||) * v / (√c ||v||)
 ```
 
-### Logarithmic Map at Origin
+### 原点处的对数映射
 ```
 log_0(x) = arctanh(√c ||x||) * x / (√c ||x||)
 ```
 
-### Möbius Addition
+### 莫比乌斯加法
 ```
 x ⊕_c y = ((1 + 2c<x,y> + c||y||²)x + (1 - c||x||²)y) / 
           (1 + 2c<x,y> + c²||x||²||y||²)
 ```
 
-## Innovation Points
+## 创新点
 
-1. **First Hyperbolic Space Temporal RE-GCN** - Combines hyperbolic geometry with temporal knowledge graph reasoning
-2. **Explicit Temporal Semantic Level Evolution** - Uses radius to model concept abstraction changes over time
-3. **Geometric Decoupling** - Separates structure propagation (GCN) from temporal memory (GRU)
+1. **首个双曲空间时序 RE-GCN** - 将双曲几何与时序知识图谱推理结合
+2. **显式的时间语义层级演化** - 使用半径建模概念抽象随时间变化
+3. **几何解耦** - 将结构传播（GCN）与时间记忆（GRU）分离
 
-## Original RE-GCN (Baseline)
+## 原始 RE-GCN（基线）
 
-The original RE-GCN model is available in the `src/` directory:
+原始 RE-GCN 模型位于 `src/` 目录：
 
 ```bash
 cd src
@@ -232,9 +237,9 @@ python main.py -d ICEWS14s \
     --gpu 0
 ```
 
-## Citation
+## 引用
 
-If you find the resource in this repository helpful, please cite:
+如果你觉得本仓库资源有帮助，请引用：
 
 ```bibtex
 @article{li2021temporal,
@@ -245,8 +250,8 @@ If you find the resource in this repository helpful, please cite:
 }
 ```
 
-## References
+## 参考文献
 
 - RE-GCN: Temporal Knowledge Graph Reasoning Based on Evolutional Representation Learning (SIGIR 2021)
 - Hyperbolic Neural Networks (NeurIPS 2018)
-- Technical solution document: `hyperbolic_temporal_re_gcn_技术方案.md` (Chinese version containing detailed mathematical derivations and design rationale)
+- 技术方案文档：`hyperbolic_temporal_re_gcn_技术方案.md`（中文版本，包含详细数学推导与设计理由）
