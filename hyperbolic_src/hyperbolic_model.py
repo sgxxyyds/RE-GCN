@@ -243,6 +243,12 @@ class HyperbolicRecurrentRGCN(nn.Module):
         nn.init.xavier_uniform_(self.time_gate_weight, gain=nn.init.calculate_gain('relu'))
         self.time_gate_bias = nn.Parameter(torch.zeros(h_dim))
         
+        # ============ Temporal Encoding (similar to HisRes) ============
+        # Learnable time encoding parameters for position-aware temporal modeling
+        self.time_weight = nn.Parameter(torch.randn(1, h_dim))
+        self.time_bias = nn.Parameter(torch.randn(1, h_dim))
+        self.time_linear = nn.Linear(2 * h_dim, h_dim)
+        
         # ============ Hyperbolic GRU for Temporal Evolution ============
         self.entity_gru = HyperbolicEntityGRU(h_dim, c=c)
         self.relation_gru = nn.GRUCell(h_dim * 2, h_dim)  # Relation GRU in tangent space
@@ -311,6 +317,16 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
+            
+            # ============ Temporal Encoding (similar to HisRes) ============
+            # Add position-aware temporal encoding for better time awareness
+            # t_pos=1 for most recent, larger values for older history
+            t_pos = len(g_list) - i  # Position in history (1 = most recent)
+            h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
+            time_encoding = torch.cos(self.time_weight * t_pos + self.time_bias)
+            time_encoding = time_encoding.expand(self.num_ents, -1)
+            h_with_time = self.time_linear(torch.cat([h_tangent, time_encoding], dim=1))
+            self.h = HyperbolicOps.exp_map_zero(h_with_time, self.c)
             
             # ============ Temporal Radius Evolution ============
             # Adjust semantic level based on time
