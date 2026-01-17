@@ -320,7 +320,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             
             # ============ Temporal Encoding (similar to HisRes) ============
             # Add position-aware temporal encoding for better time awareness
-            t_pos = len(g_list) - i + 1  # Position in history (larger = older)
+            # t_pos=1 for most recent, larger values for older history
+            t_pos = len(g_list) - i  # Position in history (1 = most recent)
             h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
             time_encoding = torch.cos(self.time_weight * t_pos + self.time_bias)
             time_encoding = time_encoding.expand(self.num_ents, -1)
