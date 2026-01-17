@@ -180,10 +180,7 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                         relation_prediction=args.relation_prediction,
                         use_cuda=use_cuda,
                         gpu = args.gpu,
-                        analysis=args.run_analysis,
-                        # 新增：关系频率增强和时间位置编码参数
-                        use_rfe=args.use_rfe,
-                        use_tpe=args.use_tpe)
+                        analysis=args.run_analysis)
 
     if use_cuda:
         torch.cuda.set_device(args.gpu)
@@ -212,7 +209,6 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
     else:
         print("----------------------------------------start training----------------------------------------\n")
         best_mrr = 0
-        epochs_without_improvement = 0
         for epoch in range(args.n_epochs):
             model.train()
             losses = []
@@ -267,23 +263,17 @@ def run_experiment(args, n_hidden=None, n_layers=None, dropout=None, n_bases=Non
                 
                 if not args.relation_evaluation:  # entity prediction evalution
                     if mrr_raw < best_mrr:
-                        epochs_without_improvement += args.evaluate_every
-                        if epochs_without_improvement >= args.patience:
-                            print("Early stopping triggered: no improvement for {} epochs".format(epochs_without_improvement))
+                        if epoch >= args.n_epochs:
                             break
                     else:
                         best_mrr = mrr_raw
-                        epochs_without_improvement = 0
                         torch.save({'state_dict': model.state_dict(), 'epoch': epoch}, model_state_file)
                 else:
                     if mrr_raw_r < best_mrr:
-                        epochs_without_improvement += args.evaluate_every
-                        if epochs_without_improvement >= args.patience:
-                            print("Early stopping triggered: no improvement for {} epochs".format(epochs_without_improvement))
+                        if epoch >= args.n_epochs:
                             break
                     else:
                         best_mrr = mrr_raw_r
-                        epochs_without_improvement = 0
                         torch.save({'state_dict': model.state_dict(), 'epoch': epoch}, model_state_file)
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = test(model, 
                                                             train_list+valid_list,
@@ -376,8 +366,6 @@ if __name__ == '__main__':
     # configuration for evaluating
     parser.add_argument("--evaluate-every", type=int, default=20,
                         help="perform evaluation every n epochs")
-    parser.add_argument("--patience", type=int, default=20,
-                        help="early stopping patience: stop training if no improvement after this many epochs")
 
     # configuration for decoder
     parser.add_argument("--decoder", type=str, default="convtranse",
@@ -404,15 +392,6 @@ if __name__ == '__main__':
                         help="stat to use")
     parser.add_argument("--num-k", type=int, default=500,
                         help="number of triples generated")
-
-    # ========== 新增：关系频率增强和时间位置编码参数 ==========
-    # 关系频率增强（RFE）
-    parser.add_argument("--use-rfe", action='store_true', default=False,
-                        help="use Relation Frequency Enhancer for relation representation enhancement")
-    
-    # 时间位置编码（TPE）
-    parser.add_argument("--use-tpe", action='store_true', default=False,
-                        help="use Temporal Position Encoder for temporal position encoding")
 
 
     args = parser.parse_args()
