@@ -263,6 +263,8 @@ def run_experiment(args):
     if not args.test:
         print("-" * 20 + " Start Training " + "-" * 20 + "\n")
         best_mrr = 0
+        best_epoch = 0
+        early_stop_patience = 20
         
         for epoch in range(args.n_epochs):
             model.train()
@@ -326,22 +328,17 @@ def run_experiment(args):
                     model_state_file, static_graph, mode="train", args=args
                 )
                 
-                if not args.relation_evaluation:
-                    if mrr_raw < best_mrr:
-                        if epoch >= args.n_epochs:
-                            break
-                    else:
-                        best_mrr = mrr_raw
-                        torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                                  model_state_file)
-                else:
-                    if mrr_raw_r < best_mrr:
-                        if epoch >= args.n_epochs:
-                            break
-                    else:
-                        best_mrr = mrr_raw_r
-                        torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
-                                  model_state_file)
+                current_mrr = mrr_raw_r if args.relation_evaluation else mrr_raw
+                if current_mrr > best_mrr:
+                    best_mrr = current_mrr
+                    best_epoch = epoch
+                    torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
+                              model_state_file)
+                elif epoch - best_epoch >= early_stop_patience:
+                    print("Early stopping at epoch {}: no improvement in {} epochs.".format(
+                        epoch, early_stop_patience
+                    ))
+                    break
         
         # Final test
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = test(
