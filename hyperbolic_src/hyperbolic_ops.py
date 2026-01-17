@@ -169,7 +169,9 @@ class HyperbolicOps:
         # Compute -x ⊕ y
         neg_x = -x
         diff = HyperbolicOps.mobius_add(neg_x, y, c, eps)
-        diff_norm = torch.norm(diff, p=2, dim=-1).clamp(min=eps, max=1/sqrt_c - eps)
+        # Add epsilon protection to avoid division by zero
+        max_norm = 1.0 / (sqrt_c + eps) - eps
+        diff_norm = torch.norm(diff, p=2, dim=-1).clamp(min=eps, max=max_norm)
         return (2 / sqrt_c) * torch.atanh(sqrt_c * diff_norm)
     
     @staticmethod

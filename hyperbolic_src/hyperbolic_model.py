@@ -321,9 +321,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
             h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
             temp_e = h_tangent[g.r_to_e]
             
-            x_input = torch.zeros(self.num_rels * 2, self.h_dim).float()
-            if use_cuda:
-                x_input = x_input.cuda()
+            # Use device from existing tensor for proper device placement
+            x_input = torch.zeros(self.num_rels * 2, self.h_dim, 
+                                  device=h_tangent.device, dtype=h_tangent.dtype)
             
             for span, r_idx in zip(g.r_len, g.uniq_r):
                 x = temp_e[span[0]:span[1], :]

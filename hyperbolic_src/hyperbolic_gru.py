@@ -69,7 +69,11 @@ class HyperbolicGRUCell(nn.Module):
     
     def forward_tangent_input(self, x_tangent, h_hyper):
         """
-        Forward pass with tangent space input.
+        Forward pass with tangent space input (alternative entry point).
+        
+        Use this method when the input is already in tangent space,
+        e.g., after a linear transformation or when integrating with
+        Euclidean modules. This avoids redundant log_0/exp_0 operations.
         
         Args:
             x_tangent: Input already in tangent space

@@ -212,7 +212,8 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         
         # Combine node and relation
         msg = node + relation
-        msg = torch.mm(msg, self.weight_neighbor)
+        # Use F.linear for proper matrix multiplication (handles 2D tensors correctly)
+        msg = F.linear(msg, self.weight_neighbor.t())
         
         return {'msg': msg}
     
