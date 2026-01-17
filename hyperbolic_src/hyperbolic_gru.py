@@ -194,8 +194,15 @@ class HyperbolicEntityGRU(nn.Module):
     """
     Hyperbolic GRU specifically designed for entity evolution in TKGC.
     
-    This module updates entity embeddings across time steps using GRU,
-    maintaining embeddings in hyperbolic space for hierarchical representation.
+    This module updates entity embeddings across time steps using a time gate
+    mechanism similar to RE-GCN, but adapted for hyperbolic space. This approach
+    provides better gradient flow and training stability compared to pure GRU.
+    
+    The update follows:
+    1. Map both current and previous embeddings to tangent space
+    2. Compute time gate: gate = sigmoid(W * prev_tangent + b)
+    3. Blend embeddings: new = gate * current + (1-gate) * prev
+    4. Map result back to hyperbolic space
     """
     
     def __init__(self, hidden_size, c=0.01):
@@ -209,12 +216,20 @@ class HyperbolicEntityGRU(nn.Module):
         self.hidden_size = hidden_size
         self.c = c
         
-        # GRU for entity evolution
+        # Time gate mechanism (similar to RE-GCN) for better gradient flow
+        self.time_gate_weight = nn.Parameter(torch.Tensor(hidden_size, hidden_size))
+        nn.init.xavier_uniform_(self.time_gate_weight, gain=nn.init.calculate_gain('sigmoid'))
+        self.time_gate_bias = nn.Parameter(torch.zeros(hidden_size))
+        
+        # Optional: GRU for more complex temporal dynamics
         self.entity_gru = nn.GRUCell(hidden_size, hidden_size)
+        
+        # Learnable blend factor to combine gate and GRU outputs
+        self.blend_weight = nn.Parameter(torch.tensor(0.5))
     
     def forward(self, current_h_hyper, prev_h_hyper):
         """
-        Update entity embeddings using GRU.
+        Update entity embeddings using time-gated mechanism.
         
         Args:
             current_h_hyper: Current entity embeddings in hyperbolic space (from GCN)
@@ -225,12 +240,20 @@ class HyperbolicEntityGRU(nn.Module):
         Returns:
             Updated entity embeddings in hyperbolic space
         """
-        # Map to tangent space
+        # Map to tangent space for computations
         current_tangent = HyperbolicOps.log_map_zero(current_h_hyper, self.c)
         prev_tangent = HyperbolicOps.log_map_zero(prev_h_hyper, self.c)
         
-        # Apply GRU update
-        new_tangent = self.entity_gru(current_tangent, prev_tangent)
+        # Time gate mechanism (similar to RE-GCN - proven to work well)
+        time_gate = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
+        gated_tangent = time_gate * current_tangent + (1 - time_gate) * prev_tangent
+        
+        # Optional GRU for additional temporal modeling
+        gru_tangent = self.entity_gru(current_tangent, prev_tangent)
+        
+        # Blend the two approaches with learnable weight
+        blend = torch.sigmoid(self.blend_weight)
+        new_tangent = blend * gated_tangent + (1 - blend) * gru_tangent
         
         # Map back to hyperbolic space
         new_hyper = HyperbolicOps.exp_map_zero(new_tangent, self.c)
