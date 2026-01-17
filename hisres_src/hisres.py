@@ -312,10 +312,10 @@ class RecurrentRGCN(nn.Module):
 
     def get_loss(self, glist, gglist, ggglist, triples, static_graph, entity_history_vocabulary, rel_history_vocabulary, use_cuda):
         self.use_cuda = use_cuda
-        loss_ent = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
-        loss_rel = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
-        loss_static = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
-        loss_spc = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
+        loss_ent = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_rel = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_static = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_spc = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
 
         #* list the triples and the inverse triples
         inverse_triples = triples[:, [2, 1, 0, 3]]

@@ -414,9 +414,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
             loss_rel: Relation prediction loss
             loss_static: Static constraint loss
         """
-        loss_ent = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
-        loss_rel = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
-        loss_static = torch.zeros(1).cuda().to(self.gpu) if use_cuda else torch.zeros(1)
+        loss_ent = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_rel = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_static = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         
         # Create inverse triplets
         inverse_triples = triples[:, [2, 1, 0]]
