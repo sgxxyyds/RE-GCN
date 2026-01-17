@@ -390,7 +390,7 @@ if __name__ == '__main__':
     parser.add_argument("--n-epochs", type=int, default=500, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--grad-norm", type=float, default=1.0, help="Gradient clipping norm")
-    parser.add_argument("--evaluate-every", type=int, default=20, help="Evaluation frequency")
+    parser.add_argument("--evaluate-every", type=int, default=1, help="Evaluation frequency")
     
     # Decoder settings
     parser.add_argument("--decoder", type=str, default="hyperbolic_convtranse", help="Decoder method")
