@@ -232,21 +232,8 @@ def run_experiment(args):
             len(static_node_id), num_static_rels, static_triples, use_cuda, args.gpu
         )
     
-    # Optimizer with different learning rates for hyperbolic and Euclidean params
-    # Hyperbolic modules need smaller learning rate for stability
-    hyperbolic_params = []
-    euclidean_params = []
-    
-    for name, param in model.named_parameters():
-        if 'hyperbolic' in name.lower() or 'temporal_radius' in name.lower():
-            hyperbolic_params.append(param)
-        else:
-            euclidean_params.append(param)
-    
-    optimizer = torch.optim.Adam([
-        {'params': euclidean_params, 'lr': args.lr},
-        {'params': hyperbolic_params, 'lr': args.lr * args.hyperbolic_lr_ratio}
-    ], weight_decay=1e-5)
+    # Optimizer - use same setup as original RE-GCN for consistency
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     
     # Testing mode
     if args.test and os.path.exists(model_state_file):
@@ -366,8 +353,6 @@ if __name__ == '__main__':
     
     # Hyperbolic space settings
     parser.add_argument("--curvature", type=float, default=0.01, help="Curvature of hyperbolic space")
-    parser.add_argument("--hyperbolic-lr-ratio", type=float, default=0.1,
-                       help="Learning rate ratio for hyperbolic parameters")
     
     # Encoder settings
     parser.add_argument("--weight", type=float, default=1, help="Weight of static constraint")

@@ -108,7 +108,7 @@ python hyperbolic_main.py -d ICEWS14s \
 
 后台运行示例：
 ```bash
-nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 > train.log 2>&1 &
+nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction --relation-prediction --gpu 0 > train.log 2>&1 &
 ```
 
 ### 使用静态图训练
@@ -135,7 +135,6 @@ python hyperbolic_main.py -d ICEWS14s \
 | 参数 | 说明 | 默认值 |
 |-----------|-------------|---------|
 | `--curvature` | 双曲空间曲率 | 0.01 |
-| `--hyperbolic-lr-ratio` | 双曲参数的学习率比例 | 0.1 |
 | `--n-hidden` | 隐藏维度 | 200 |
 | `--n-layers` | GCN 层数 | 2 |
 | `--train-history-len` | 训练历史长度 | 10 |
