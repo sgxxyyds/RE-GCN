@@ -192,17 +192,23 @@ class HyperbolicGRU(nn.Module):
 
 class HyperbolicEntityGRU(nn.Module):
     """
-    Hyperbolic GRU specifically designed for entity evolution in TKGC.
+    Hyperbolic time gate for entity evolution in TKGC.
     
     This module updates entity embeddings across time steps using a time gate
-    mechanism similar to RE-GCN, but adapted for hyperbolic space. This approach
-    provides better gradient flow and training stability compared to pure GRU.
+    mechanism that strictly follows RE-GCN's design, adapted for hyperbolic space.
     
-    The update follows:
-    1. Map both current and previous embeddings to tangent space
-    2. Compute time gate: gate = sigmoid(W * prev_tangent + b)
-    3. Blend embeddings: new = gate * current + (1-gate) * prev
-    4. Map result back to hyperbolic space
+    RE-GCN Time Gate Formula:
+        time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
+        self.h = time_weight * current_h + (1 - time_weight) * self.h
+    
+    Hyperbolic Adaptation:
+        1. Map both current and previous embeddings to tangent space
+        2. Compute time gate: time_weight = sigmoid(mm(prev_tangent, W) + b)
+        3. Blend embeddings: new_tangent = time_weight * current_tangent + (1-time_weight) * prev_tangent
+        4. Map result back to hyperbolic space
+    
+    Note: This is a pure time gate mechanism like RE-GCN, not a full GRU.
+          The name "GRU" is kept for backwards compatibility.
     """
     
     def __init__(self, hidden_size, c=0.01):
@@ -216,20 +222,22 @@ class HyperbolicEntityGRU(nn.Module):
         self.hidden_size = hidden_size
         self.c = c
         
-        # Time gate mechanism (similar to RE-GCN) for better gradient flow
+        # Time gate mechanism - exactly like RE-GCN
+        # RE-GCN: time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
         self.time_gate_weight = nn.Parameter(torch.Tensor(hidden_size, hidden_size))
-        nn.init.xavier_uniform_(self.time_gate_weight, gain=nn.init.calculate_gain('sigmoid'))
+        nn.init.xavier_uniform_(self.time_gate_weight, gain=nn.init.calculate_gain('relu'))
         self.time_gate_bias = nn.Parameter(torch.zeros(hidden_size))
-        
-        # Optional: GRU for more complex temporal dynamics
-        self.entity_gru = nn.GRUCell(hidden_size, hidden_size)
-        
-        # Learnable blend factor to combine gate and GRU outputs
-        self.blend_weight = nn.Parameter(torch.tensor(0.5))
     
     def forward(self, current_h_hyper, prev_h_hyper):
         """
-        Update entity embeddings using time-gated mechanism.
+        Update entity embeddings using time-gated mechanism (RE-GCN style).
+        
+        RE-GCN formula (in Euclidean space):
+            time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
+            self.h = time_weight * current_h + (1 - time_weight) * self.h
+        
+        Hyperbolic adaptation:
+            All operations performed in tangent space, then mapped back.
         
         Args:
             current_h_hyper: Current entity embeddings in hyperbolic space (from GCN)
@@ -244,16 +252,13 @@ class HyperbolicEntityGRU(nn.Module):
         current_tangent = HyperbolicOps.log_map_zero(current_h_hyper, self.c)
         prev_tangent = HyperbolicOps.log_map_zero(prev_h_hyper, self.c)
         
-        # Time gate mechanism (similar to RE-GCN - proven to work well)
-        time_gate = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
-        gated_tangent = time_gate * current_tangent + (1 - time_gate) * prev_tangent
+        # RE-GCN style time gate: use previous embedding to compute gate
+        # This is the exact formula from RE-GCN:
+        # time_weight = F.sigmoid(torch.mm(self.h, self.time_gate_weight) + self.time_gate_bias)
+        time_weight = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
         
-        # Optional GRU for additional temporal modeling
-        gru_tangent = self.entity_gru(current_tangent, prev_tangent)
-        
-        # Blend the two approaches with learnable weight
-        blend = torch.sigmoid(self.blend_weight)
-        new_tangent = blend * gated_tangent + (1 - blend) * gru_tangent
+        # RE-GCN style blending: new = time_weight * current + (1 - time_weight) * previous
+        new_tangent = time_weight * current_tangent + (1 - time_weight) * prev_tangent
         
         # Map back to hyperbolic space
         new_hyper = HyperbolicOps.exp_map_zero(new_tangent, self.c)

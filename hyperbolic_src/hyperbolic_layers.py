@@ -225,11 +225,20 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         """
         Forward pass of hyperbolic Union RGCN layer.
         
+        Strictly follows RE-GCN's UnionRGCNLayer design:
+        1. Map to tangent space
+        2. Compute self-loop with different weights for nodes with/without incoming edges
+        3. Compute skip connection gate if applicable
+        4. Message passing in tangent space
+        5. Add self-loop message, then apply skip connection
+        6. Apply activation and dropout
+        7. Map back to hyperbolic space
+        
         Args:
             g: DGL graph
             h_hyper: Node features in hyperbolic space
             rel_emb: Relation embeddings in tangent space
-            prev_h: Previous layer hidden state for skip connection
+            prev_h: Previous layer hidden state (tangent space) for skip connection
             
         Returns:
             Updated node features in hyperbolic space
@@ -241,34 +250,40 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         h_tangent = HyperbolicOps.log_map_zero(h_hyper, self.c)
         g.ndata['h_tangent'] = h_tangent
         
-        # Compute self-loop messages
+        # Compute self-loop messages (RE-GCN style: different weights for nodes with/without edges)
         if self.self_loop:
-            # Different weights for nodes with/without incoming edges
+            # For nodes without incoming edges: use evolve_loop_weight (preserve evolution)
+            # For nodes with incoming edges: use loop_weight (include self-loop in aggregation)
             masked_index = torch.masked_select(
                 torch.arange(0, g.number_of_nodes(), dtype=torch.long, device=device),
                 (g.in_degrees(range(g.number_of_nodes())) > 0))
             loop_message = torch.mm(h_tangent, self.evolve_loop_weight)
             loop_message[masked_index, :] = torch.mm(h_tangent, self.loop_weight)[masked_index, :]
         
-        # Skip connection weight
+        # Skip connection gate (RE-GCN style)
         if self.skip_connect and prev_h is not None:
+            # prev_h is expected to be in hyperbolic space (from previous layer output)
+            # Always map to tangent space for skip connection computation
             prev_tangent = HyperbolicOps.log_map_zero(prev_h, self.c)
-            skip_gate = torch.sigmoid(torch.mm(prev_tangent, self.skip_weight) + self.skip_bias)
+            skip_weight = torch.sigmoid(torch.mm(prev_tangent, self.skip_weight) + self.skip_bias)
         
         # Step 2: Message passing in tangent space
         g.update_all(lambda x: self.msg_func(x), fn.sum(msg='msg', out='h_tangent'), self.apply_func)
         
         h_new = g.ndata.pop('h_tangent')
         
-        # Add self-loop
-        if self.self_loop:
-            h_new = h_new + loop_message
-        
-        # Skip connection
+        # RE-GCN style: First add self-loop, then apply skip connection
         if self.skip_connect and prev_h is not None:
-            h_new = skip_gate * h_new + (1 - skip_gate) * prev_tangent
+            # With skip connection: add self-loop first, then blend with previous
+            if self.self_loop:
+                h_new = h_new + loop_message
+            h_new = skip_weight * h_new + (1 - skip_weight) * prev_tangent
+        else:
+            # Without skip connection: just add self-loop
+            if self.self_loop:
+                h_new = h_new + loop_message
         
-        # Activation
+        # Activation (RE-GCN applies after aggregation and skip connection)
         if self.activation is not None:
             h_new = self.activation(h_new)
         
