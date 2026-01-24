@@ -26,7 +26,6 @@ import numpy as np
 
 from hyperbolic_src.hyperbolic_ops import (
     HyperbolicOps, 
-    HyperbolicEntityInit, 
     TemporalRadiusEvolution
 )
 from hyperbolic_src.hyperbolic_layers import (
@@ -194,12 +193,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.gpu = gpu
         
         # ============ Entity Embeddings ============
-        # Initialize entity embeddings in hyperbolic space
-        self.entity_init = HyperbolicEntityInit(num_ents, h_dim, c=c)
-        
         # Dynamic entity embeddings (learnable, in tangent space initially)
+        # Use same initialization as original RE-GCN for consistency
         self.dynamic_emb = nn.Parameter(torch.Tensor(num_ents, h_dim))
-        nn.init.normal_(self.dynamic_emb, std=0.01)
+        nn.init.normal_(self.dynamic_emb)
         
         # ============ Relation Embeddings ============
         # Relation embeddings in tangent space
