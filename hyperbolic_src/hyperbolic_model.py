@@ -194,9 +194,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         # ============ Entity Embeddings ============
         # Dynamic entity embeddings (learnable, in tangent space initially)
-        # Use same initialization as original RE-GCN for consistency
+        # Use same initialization as original RE-GCN for consistency (std=1.0)
         self.dynamic_emb = nn.Parameter(torch.Tensor(num_ents, h_dim))
-        nn.init.normal_(self.dynamic_emb)
+        nn.init.normal_(self.dynamic_emb, std=1.0)
         
         # ============ Relation Embeddings ============
         # Relation embeddings in tangent space
