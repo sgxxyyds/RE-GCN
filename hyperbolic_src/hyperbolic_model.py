@@ -2,11 +2,18 @@
 Hyperbolic Temporal RE-GCN Model.
 
 This module implements the main Hyperbolic Temporal RE-GCN model for
-temporal knowledge graph completion. It combines:
+temporal knowledge graph completion. It strictly follows the RE-GCN 
+architecture principles, adapted for hyperbolic space:
+
 1. Hyperbolic entity embeddings in Poincaré ball
-2. Hyperbolic RE-GCN for graph convolution
-3. Hyperbolic GRU for temporal evolution
-4. Temporal radius evolution for semantic level changes
+2. Hyperbolic RE-GCN for graph convolution (same aggregation as RE-GCN)
+3. RE-GCN style time gate for temporal evolution (not GRU)
+4. Temporal radius evolution for semantic level changes (hyperbolic innovation)
+
+Key Design Principle:
+- All modules follow RE-GCN's design, only mapped to hyperbolic space
+- Time gate uses same formula as RE-GCN: sigmoid(mm(h, W) + b)
+- Graph convolution follows UnionRGCNLayer with separate self-loop weights
 
 Reference: Technical solution document - hyperbolic_temporal_re_gcn_技术方案.md
 """
@@ -25,10 +32,6 @@ from hyperbolic_src.hyperbolic_ops import (
 from hyperbolic_src.hyperbolic_layers import (
     HyperbolicRGCNLayer,
     HyperbolicUnionRGCNLayer
-)
-from hyperbolic_src.hyperbolic_gru import (
-    HyperbolicEntityGRU,
-    HyperbolicRelationGRU
 )
 from hyperbolic_src.hyperbolic_decoder import (
     HyperbolicConvTransE,
@@ -238,20 +241,14 @@ class HyperbolicRecurrentRGCN(nn.Module):
             rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
         )
         
-        # ============ Time Gate (for Euclidean-Hyperbolic fusion) ============
+        # ============ Time Gate (RE-GCN style, for entity evolution) ============
+        # RE-GCN: time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
         self.time_gate_weight = nn.Parameter(torch.Tensor(h_dim, h_dim))
         nn.init.xavier_uniform_(self.time_gate_weight, gain=nn.init.calculate_gain('relu'))
         self.time_gate_bias = nn.Parameter(torch.zeros(h_dim))
         
-        # ============ Temporal Encoding (similar to HisRes) ============
-        # Learnable time encoding parameters for position-aware temporal modeling
-        self.time_weight = nn.Parameter(torch.randn(1, h_dim))
-        self.time_bias = nn.Parameter(torch.randn(1, h_dim))
-        self.time_linear = nn.Linear(2 * h_dim, h_dim)
-        
-        # ============ Hyperbolic GRU for Temporal Evolution ============
-        self.entity_gru = HyperbolicEntityGRU(h_dim, c=c)
-        self.relation_gru = nn.GRUCell(h_dim * 2, h_dim)  # Relation GRU in tangent space
+        # ============ Relation GRU (RE-GCN style) ============
+        self.relation_gru = nn.GRUCell(h_dim * 2, h_dim)
         
         # ============ Decoders ============
         if decoder_name == "hyperbolic_convtranse":
@@ -281,6 +278,15 @@ class HyperbolicRecurrentRGCN(nn.Module):
         """
         Forward pass through the Hyperbolic Recurrent RGCN.
         
+        Strictly follows RE-GCN's forward flow, adapted for hyperbolic space:
+        1. Initialize entity embeddings (optionally from static graph)
+        2. For each time step:
+           a. Compute relation context aggregation (same as RE-GCN)
+           b. Update relation embeddings via GRU (same as RE-GCN)
+           c. Apply RE-GCN graph convolution (hyperbolic version)
+           d. Apply time gate for entity evolution (same as RE-GCN)
+           e. (Optional) Apply temporal radius evolution (hyperbolic innovation)
+        
         Args:
             g_list: List of DGL graphs for each time step
             static_graph: Static graph (optional)
@@ -296,7 +302,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         gate_list = []
         degree_list = []
         
-        # Initialize entity embeddings in hyperbolic space
+        # Initialize entity embeddings (RE-GCN style, then map to hyperbolic)
         if self.use_static and static_graph is not None:
             static_graph = static_graph.to(self.gpu)
             # Combine dynamic embeddings with word embeddings
@@ -308,8 +314,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Map to hyperbolic space
             self.h = HyperbolicOps.exp_map_zero(static_emb, self.c)
         else:
-            # Initialize from dynamic embeddings
-            init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
+            # Initialize from dynamic embeddings (RE-GCN style)
+            init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb[:, :]
             self.h = HyperbolicOps.exp_map_zero(init_emb, self.c)
             static_emb = None
         
@@ -318,22 +324,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
             
-            # ============ Temporal Encoding (similar to HisRes) ============
-            # Add position-aware temporal encoding for better time awareness
-            # t_pos=1 for most recent, larger values for older history
-            t_pos = len(g_list) - i  # Position in history (1 = most recent)
-            h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
-            time_encoding = torch.cos(self.time_weight * t_pos + self.time_bias)
-            time_encoding = time_encoding.expand(self.num_ents, -1)
-            h_with_time = self.time_linear(torch.cat([h_tangent, time_encoding], dim=1))
-            self.h = HyperbolicOps.exp_map_zero(h_with_time, self.c)
-            
-            # ============ Temporal Radius Evolution ============
-            # Adjust semantic level based on time
-            self.h = self.temporal_radius_evolution(self.h)
-            
-            # ============ Relation Context Aggregation ============
-            # Compute relation-specific entity context
+            # ============ Relation Context Aggregation (RE-GCN style) ============
+            # Map to tangent space for relation context computation
             h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
             temp_e = h_tangent[g.r_to_e]
             
@@ -346,7 +338,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 x_mean = torch.mean(x, dim=0, keepdim=True)
                 x_input[r_idx] = x_mean
             
-            # ============ Relation Evolution ============
+            # ============ Relation Evolution (RE-GCN style) ============
             if i == 0:
                 # First time step: initialize relation hidden state
                 x_input = torch.cat((self.emb_rel, x_input), dim=1)
@@ -363,15 +355,30 @@ class HyperbolicRecurrentRGCN(nn.Module):
             current_h = self.rgcn.forward(g, self.h, [self.h_0, self.h_0])
             current_h = HyperbolicOps.project_to_ball(current_h, self.c)
             
-            # ============ Hyperbolic GRU for Entity Evolution ============
-            # Apply temporal smoothing using hyperbolic GRU
-            self.h = self.entity_gru(current_h, self.h)
+            # Apply layer normalization if needed (RE-GCN style, in tangent space)
+            if self.layer_norm:
+                current_h_tangent = HyperbolicOps.log_map_zero(current_h, self.c)
+                current_h_tangent = F.normalize(current_h_tangent)
+                current_h = HyperbolicOps.exp_map_zero(current_h_tangent, self.c)
+            
+            # ============ Time Gate for Entity Evolution (RE-GCN style) ============
+            # RE-GCN formula: time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
+            #                 self.h = time_weight * current_h + (1 - time_weight) * self.h
+            # Hyperbolic adaptation: perform in tangent space
+            current_tangent = HyperbolicOps.log_map_zero(current_h, self.c)
+            prev_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
+            
+            time_weight = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
+            new_tangent = time_weight * current_tangent + (1 - time_weight) * prev_tangent
+            
+            # Map back to hyperbolic space
+            self.h = HyperbolicOps.exp_map_zero(new_tangent, self.c)
             self.h = HyperbolicOps.project_to_ball(self.h, self.c)
             
-            if self.layer_norm:
-                h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
-                h_tangent = F.normalize(h_tangent)
-                self.h = HyperbolicOps.exp_map_zero(h_tangent, self.c)
+            # ============ Temporal Radius Evolution (Hyperbolic Innovation) ============
+            # Optional: Adjust semantic level based on time (hyperbolic-specific)
+            # This is the key innovation of the hyperbolic model
+            self.h = self.temporal_radius_evolution(self.h)
             
             history_embs.append(self.h)
         
