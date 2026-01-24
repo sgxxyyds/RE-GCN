@@ -262,12 +262,9 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         
         # Skip connection gate (RE-GCN style)
         if self.skip_connect and prev_h is not None:
-            # prev_h should already be in tangent space for skip connection
-            if isinstance(prev_h, torch.Tensor):
-                # If prev_h is in hyperbolic space, map to tangent
-                prev_tangent = HyperbolicOps.log_map_zero(prev_h, self.c) if prev_h.abs().max() < 1.0 / (self.c ** 0.5) else prev_h
-            else:
-                prev_tangent = prev_h
+            # prev_h is expected to be in hyperbolic space (from previous layer output)
+            # Always map to tangent space for skip connection computation
+            prev_tangent = HyperbolicOps.log_map_zero(prev_h, self.c)
             skip_weight = torch.sigmoid(torch.mm(prev_tangent, self.skip_weight) + self.skip_bias)
         
         # Step 2: Message passing in tangent space

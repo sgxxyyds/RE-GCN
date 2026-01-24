@@ -315,7 +315,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
             self.h = HyperbolicOps.exp_map_zero(static_emb, self.c)
         else:
             # Initialize from dynamic embeddings (RE-GCN style)
-            init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb[:, :]
+            init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
             self.h = HyperbolicOps.exp_map_zero(init_emb, self.c)
             static_emb = None
         
