@@ -272,6 +272,9 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         
         h_new = g.ndata.pop('h_tangent')
         
+        # IMPROVED: Gradient scaling - clamp large values to prevent explosion
+        h_new = torch.clamp(h_new, min=-10.0, max=10.0)
+        
         # RE-GCN style: First add self-loop, then apply skip connection
         if self.skip_connect and prev_h is not None:
             # With skip connection: add self-loop first, then blend with previous
@@ -282,6 +285,9 @@ class HyperbolicUnionRGCNLayer(nn.Module):
             # Without skip connection: just add self-loop
             if self.self_loop:
                 h_new = h_new + loop_message
+        
+        # IMPROVED: Clamp again after aggregation
+        h_new = torch.clamp(h_new, min=-10.0, max=10.0)
         
         # Activation (RE-GCN applies after aggregation and skip connection)
         if self.activation is not None:

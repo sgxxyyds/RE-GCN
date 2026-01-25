@@ -242,11 +242,12 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.emb_rel = nn.Parameter(torch.Tensor(num_rels * 2, h_dim))
         nn.init.xavier_normal_(self.emb_rel)
         
-        # ============ Temporal Radius Evolution (IMPROVED) ============
+        # ============ Temporal Radius Evolution (IMPROVED v3) ============
+        # Enable attention for better temporal modeling
         self.temporal_radius_evolution = TemporalRadiusEvolution(
             h_dim, c=c, 
             use_residual=use_residual_evolution,
-            use_attention=False  # Can be enabled for more complex evolution
+            use_attention=True  # Enable attention for better temporal evolution
         )
         
         # ============ Transformation Weights ============
@@ -438,6 +439,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Hyperbolic adaptation: perform in tangent space
             current_tangent = HyperbolicOps.log_map_zero(current_h, c_val)
             prev_tangent = HyperbolicOps.log_map_zero(self.h, c_val)
+            
+            # IMPROVED: Clamp tangent space values for gradient stability
+            current_tangent = torch.clamp(current_tangent, min=-10.0, max=10.0)
+            prev_tangent = torch.clamp(prev_tangent, min=-10.0, max=10.0)
             
             time_weight = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
             new_tangent = time_weight * current_tangent + (1 - time_weight) * prev_tangent
