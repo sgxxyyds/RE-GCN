@@ -4,6 +4,12 @@ Hyperbolic Temporal RE-GCN Main Training Script.
 This script provides the entry point for training and evaluating the
 Hyperbolic Temporal RE-GCN model for temporal knowledge graph completion.
 
+OPTIMIZATIONS (v2):
+- Added comprehensive logging for debugging and analysis
+- Added new command-line options for architecture improvements
+- Added gradient statistics logging
+- Added embedding statistics logging
+
 Usage:
     python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 \\
         --lr 0.001 --n-layers 2 --n-hidden 200 --self-loop --layer-norm \\
@@ -16,6 +22,7 @@ import sys
 import time
 import math
 import random
+import logging
 
 import dgl
 import numpy as np
@@ -30,9 +37,28 @@ from rgcn.utils import build_sub_graph
 from rgcn.knowledge_graph import _read_triplets_as_list
 from hyperbolic_src.hyperbolic_model import HyperbolicRecurrentRGCN
 
+# Set up logging
+def setup_logging(log_level=logging.INFO, log_file=None):
+    """Set up logging configuration."""
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file))
+    
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+    
+    # Set specific loggers
+    logging.getLogger("hyperbolic_model").setLevel(log_level)
+    logging.getLogger("hyperbolic_ops").setLevel(log_level)
+    
+    return logging.getLogger("hyperbolic_main")
+
 
 def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
-         all_ans_list, all_ans_r_list, model_name, static_graph, mode, args):
+         all_ans_list, all_ans_r_list, model_name, static_graph, mode, args, logger=None):
     """
     Test the model on given test data.
     
@@ -126,12 +152,17 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
     mrr_raw_r = utils.stat_ranks(ranks_raw_r, "raw_rel")
     mrr_filter_r = utils.stat_ranks(ranks_filter_r, "filter_rel")
     
+    # Log final metrics
+    if logger:
+        logger.info(f"Test Results - MRR (raw): {mrr_raw:.4f}, MRR (filter): {mrr_filter:.4f}")
+        logger.info(f"Test Results - Rel MRR (raw): {mrr_raw_r:.4f}, Rel MRR (filter): {mrr_filter_r:.4f}")
+    
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
 
 
 def run_experiment(args):
     """
-    Run the training/testing experiment.
+    Run the training/testing experiment with comprehensive logging.
     
     Args:
         args: Command line arguments
@@ -139,8 +170,18 @@ def run_experiment(args):
     Returns:
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
     """
+    # Set up logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    log_file = f"hyperbolic_training_{args.dataset}.log" if args.log_file else None
+    logger = setup_logging(log_level, log_file)
+    
+    logger.info("=" * 60)
+    logger.info("Hyperbolic Temporal RE-GCN Training")
+    logger.info("=" * 60)
+    logger.info(f"Arguments: {args}")
+    
     # Load data
-    print("Loading graph data...")
+    logger.info("Loading graph data...")
     data = utils.load_data(args.dataset)
     train_list = utils.split_by_time(data.train)
     valid_list = utils.split_by_time(data.valid)
@@ -148,6 +189,13 @@ def run_experiment(args):
     
     num_nodes = data.num_nodes
     num_rels = data.num_rels
+    
+    logger.info(f"Dataset: {args.dataset}")
+    logger.info(f"  - Entities: {num_nodes}")
+    logger.info(f"  - Relations: {num_rels}")
+    logger.info(f"  - Train snapshots: {len(train_list)}")
+    logger.info(f"  - Valid snapshots: {len(valid_list)}")
+    logger.info(f"  - Test snapshots: {len(test_list)}")
     
     # Load answer lists for filtering
     all_ans_list_test = utils.load_all_answers_for_time_filter(
@@ -163,16 +211,17 @@ def run_experiment(args):
         data.valid, num_rels, num_nodes, True
     )
     
-    # Model name for checkpointing
-    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-gpu{}".format(
+    # Model name for checkpointing (updated to include new parameters)
+    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-gpu{}".format(
         args.dataset, args.encoder, args.decoder, args.n_layers,
         args.curvature, args.train_history_len, args.weight, args.angle,
         args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout,
+        int(args.use_residual), int(args.learn_curvature),
         args.gpu
     )
     model_state_file = '../models/' + model_name
-    print("Model checkpoint: {}".format(model_state_file))
-    print("CUDA available: {}".format(torch.cuda.is_available()))
+    logger.info(f"Model checkpoint: {model_state_file}")
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
     
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     
@@ -187,10 +236,12 @@ def run_experiment(args):
         static_node_id = torch.from_numpy(np.arange(num_words + data.num_nodes)).view(-1, 1).long()
         if use_cuda:
             static_node_id = static_node_id.cuda(args.gpu)
+        logger.info(f"Static graph loaded: {num_static_rels} relations, {num_words} words")
     else:
         num_static_rels, num_words, static_triples, static_graph = 0, 0, [], None
     
-    # Create model
+    # Create model with new parameters
+    logger.info("Creating Hyperbolic Recurrent RGCN model...")
     model = HyperbolicRecurrentRGCN(
         decoder_name=args.decoder,
         encoder_name=args.encoder,
@@ -219,12 +270,21 @@ def run_experiment(args):
         relation_prediction=args.relation_prediction,
         use_cuda=use_cuda,
         gpu=args.gpu,
-        analysis=args.run_analysis
+        analysis=args.run_analysis,
+        # New optimization parameters
+        learn_curvature=args.learn_curvature,
+        use_residual_evolution=args.use_residual
     )
+    
+    # Log model parameter count
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
     
     if use_cuda:
         torch.cuda.set_device(args.gpu)
         model.cuda()
+        logger.info(f"Model moved to GPU {args.gpu}")
     
     # Build static graph
     if args.add_static_graph:
@@ -234,26 +294,32 @@ def run_experiment(args):
     
     # Optimizer - use same setup as original RE-GCN for consistency
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
     
     # Testing mode
     if args.test and os.path.exists(model_state_file):
+        logger.info("Starting evaluation mode...")
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = test(
             model, train_list + valid_list, test_list, num_rels, num_nodes,
             use_cuda, all_ans_list_test, all_ans_list_r_test, model_state_file,
-            static_graph, "test", args
+            static_graph, "test", args, logger
         )
     elif args.test and not os.path.exists(model_state_file):
-        print("-" * 20 + " Model not found, switching to training " + "-" * 20)
+        logger.warning("Model not found, switching to training mode")
         args.test = False
     
     # Training mode
     if not args.test:
-        print("-" * 20 + " Start Training " + "-" * 20 + "\n")
+        logger.info("=" * 40)
+        logger.info("Starting Training")
+        logger.info("=" * 40)
         best_mrr = 0
         best_epoch = 0
         early_stop_patience = 20
+        training_start_time = time.time()
         
         for epoch in range(args.n_epochs):
+            epoch_start_time = time.time()
             model.train()
             losses = []
             losses_e = []
@@ -264,7 +330,7 @@ def run_experiment(args):
             idx = list(range(len(train_list)))
             random.shuffle(idx)
             
-            for train_sample_num in tqdm(idx):
+            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}"):
                 if train_sample_num == 0:
                     continue
                 
@@ -298,22 +364,44 @@ def run_experiment(args):
                 
                 # Backprop
                 loss.backward()
+                
+                # Log gradient statistics if in analysis mode
+                if args.run_analysis and train_sample_num % 100 == 0:
+                    model.log_gradient_stats()
+                
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
                 optimizer.step()
                 optimizer.zero_grad()
             
-            print("Epoch {:04d} | Ave Loss: {:.4f} | entity-relation-static: {:.4f}-{:.4f}-{:.4f} | Best MRR: {:.4f} | Model: {}".format(
-                epoch, np.mean(losses), np.mean(losses_e), np.mean(losses_r),
-                np.mean(losses_static), best_mrr, model_name
-            ))
+            # Calculate epoch time
+            epoch_time = time.time() - epoch_start_time
+            
+            # Log epoch summary
+            epoch_summary = (f"Epoch {epoch:04d} | "
+                           f"Loss: {np.mean(losses):.4f} | "
+                           f"E/R/S: {np.mean(losses_e):.4f}/{np.mean(losses_r):.4f}/{np.mean(losses_static):.4f} | "
+                           f"Best MRR: {best_mrr:.4f} | "
+                           f"Time: {epoch_time:.1f}s")
+            logger.info(epoch_summary)
+            print(epoch_summary)
+            
+            # Log model-specific training summary
+            if args.run_analysis:
+                training_summary = model.get_training_summary()
+                logger.info(f"Training summary: {training_summary}")
             
             # Validation
             if epoch and epoch % args.evaluate_every == 0:
+                logger.info(f"Running validation at epoch {epoch}...")
                 mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = test(
                     model, train_list, valid_list, num_rels, num_nodes,
                     use_cuda, all_ans_list_valid, all_ans_list_r_valid,
-                    model_state_file, static_graph, mode="train", args=args
+                    model_state_file, static_graph, mode="train", args=args, logger=logger
                 )
+                
+                # Log validation metrics
+                logger.info(f"Validation - MRR: raw={mrr_raw:.4f}, filter={mrr_filter:.4f}")
+                logger.info(f"Validation - Rel MRR: raw={mrr_raw_r:.4f}, filter={mrr_filter_r:.4f}")
                 
                 current_mrr = mrr_raw_r if args.relation_evaluation else mrr_raw
                 if current_mrr > best_mrr:
@@ -321,18 +409,32 @@ def run_experiment(args):
                     best_epoch = epoch
                     torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
                               model_state_file)
+                    logger.info(f"New best model saved! MRR: {best_mrr:.4f}")
                 elif epoch - best_epoch >= early_stop_patience:
-                    print("Early stopping at epoch {}: no improvement in {} epochs.".format(
-                        epoch, early_stop_patience
-                    ))
+                    logger.info(f"Early stopping at epoch {epoch}: no improvement in {early_stop_patience} epochs.")
                     break
         
+        # Log training time
+        total_training_time = time.time() - training_start_time
+        logger.info(f"Training completed in {total_training_time/60:.1f} minutes")
+        
         # Final test
+        logger.info("=" * 40)
+        logger.info("Final Evaluation on Test Set")
+        logger.info("=" * 40)
         mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r = test(
             model, train_list + valid_list, test_list, num_rels, num_nodes,
             use_cuda, all_ans_list_test, all_ans_list_r_test, model_state_file,
-            static_graph, mode="test", args=args
+            static_graph, mode="test", args=args, logger=logger
         )
+        
+        # Log final results
+        logger.info("=" * 40)
+        logger.info("Final Test Results")
+        logger.info("=" * 40)
+        logger.info(f"Entity Prediction - MRR: raw={mrr_raw:.4f}, filter={mrr_filter:.4f}")
+        logger.info(f"Relation Prediction - MRR: raw={mrr_raw_r:.4f}, filter={mrr_filter_r:.4f}")
+        logger.info(f"Best epoch: {best_epoch}, Best MRR: {best_mrr:.4f}")
     
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
 
@@ -353,6 +455,8 @@ if __name__ == '__main__':
     
     # Hyperbolic space settings
     parser.add_argument("--curvature", type=float, default=0.01, help="Curvature of hyperbolic space")
+    parser.add_argument("--learn-curvature", action='store_true', default=False, help="Learn curvature during training (NEW)")
+    parser.add_argument("--use-residual", action='store_true', default=True, help="Use residual connection in temporal evolution (NEW)")
     
     # Encoder settings
     parser.add_argument("--weight", type=float, default=1, help="Weight of static constraint")
@@ -386,6 +490,10 @@ if __name__ == '__main__':
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
     parser.add_argument("--test-history-len", type=int, default=20, help="Testing history length")
+    
+    # Logging settings (NEW)
+    parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
+    parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     
     args = parser.parse_args()
     print(args)
