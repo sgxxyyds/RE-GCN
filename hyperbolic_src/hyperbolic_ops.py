@@ -13,6 +13,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import logging
+
+# Set up logging for hyperbolic operations
+logger = logging.getLogger("hyperbolic_ops")
 
 
 class HyperbolicOps:
@@ -188,6 +192,72 @@ class HyperbolicOps:
             Radius of each point, shape (...)
         """
         return torch.norm(x, p=2, dim=-1).clamp(min=eps)
+    
+    @staticmethod
+    def log_embedding_stats(x, name="embeddings", c=0.01):
+        """
+        Log statistics about embeddings for debugging and analysis.
+        
+        Args:
+            x: Embeddings tensor
+            name: Name for logging
+            c: Curvature parameter
+            
+        Returns:
+            Dictionary with statistics
+        """
+        with torch.no_grad():
+            radius = HyperbolicOps.get_radius(x)
+            max_radius = 1.0 / math.sqrt(c)
+            stats = {
+                "name": name,
+                "mean_norm": radius.mean().item(),
+                "max_norm": radius.max().item(),
+                "min_norm": radius.min().item(),
+                "std_norm": radius.std().item(),
+                "max_allowed": max_radius,
+                "pct_near_boundary": (radius > 0.9 * max_radius).float().mean().item() * 100,
+            }
+            logger.debug(f"{name} stats: mean={stats['mean_norm']:.4f}, "
+                        f"max={stats['max_norm']:.4f}, "
+                        f"near_boundary={stats['pct_near_boundary']:.2f}%")
+            return stats
+    
+    @staticmethod
+    def safe_arctanh(x, eps=1e-6):
+        """
+        Numerically stable arctanh operation.
+        
+        Note: This is a utility function for custom hyperbolic operations.
+        It can be used when implementing custom decoders or distance functions
+        that require arctanh with numerical stability guarantees.
+        
+        Args:
+            x: Input tensor
+            eps: Small epsilon for clamping
+            
+        Returns:
+            arctanh(x) with numerical stability
+        """
+        x_clamped = torch.clamp(x, min=-1 + eps, max=1 - eps)
+        return torch.atanh(x_clamped)
+    
+    @staticmethod
+    def get_curvature_scale(c):
+        """
+        Get the scale factor for the given curvature.
+        
+        Note: This is a utility function for computing curvature-dependent
+        scaling factors. Useful when implementing custom hyperbolic layers
+        or when debugging curvature-related issues.
+        
+        Args:
+            c: Curvature parameter
+            
+        Returns:
+            Scale factor sqrt(c)
+        """
+        return math.sqrt(c)
 
 
 class HyperbolicLayer(nn.Module):
@@ -248,50 +318,94 @@ class HyperbolicLayer(nn.Module):
 
 class TemporalRadiusEvolution(nn.Module):
     """
-    Temporal Radius Evolution Module.
+    Temporal Radius Evolution Module with Residual Connection.
     
     This module adjusts entity embeddings based on temporal evolution,
     using a learnable diagonal matrix to scale the radius (semantic level)
     of entity representations across time steps.
+    
+    IMPROVED: Added residual connection for stability and optional attention.
     
     h_e^(t-1 -> t) = log_0(W_Δt ⊗_c exp_0(h_e^(t-1)))
     
     Where W_Δt is a learnable diagonal matrix.
     """
     
-    def __init__(self, dim, c=0.01):
+    def __init__(self, dim, c=0.01, use_residual=True, use_attention=False):
         """
         Args:
             dim: Embedding dimension
             c: Curvature parameter
+            use_residual: Whether to use residual connection (default True)
+            use_attention: Whether to use attention-based evolution (default False)
         """
         super(TemporalRadiusEvolution, self).__init__()
         self.dim = dim
         self.c = c
+        self.use_residual = use_residual
+        self.use_attention = use_attention
         
         # Learnable diagonal scaling matrix (initialized to 1.0)
         self.scale = nn.Parameter(torch.ones(dim))
+        
+        # Residual gate: controls how much to evolve vs keep original
+        if use_residual:
+            self.residual_gate = nn.Parameter(torch.zeros(1))
+        
+        # Attention-based temporal evolution
+        if use_attention:
+            self.attention_weight = nn.Parameter(torch.Tensor(dim, dim))
+            nn.init.xavier_uniform_(self.attention_weight)
+            self.attention_bias = nn.Parameter(torch.zeros(dim))
+        
+        # For logging
+        self.last_evolution_stats = None
     
     def forward(self, x):
         """
-        Apply temporal radius evolution.
+        Apply temporal radius evolution with optional residual connection.
         
         Args:
             x: Entity embeddings in hyperbolic space, shape (..., dim)
             
         Returns:
-            Evolved embeddings in tangent space (for GRU input)
+            Evolved embeddings in hyperbolic space
         """
         # Map to tangent space
         tangent = HyperbolicOps.log_map_zero(x, self.c)
         
         # Apply diagonal scaling (radius adjustment)
-        scaled = tangent * self.scale
+        if self.use_attention:
+            # Attention-based scaling: compute attention score per dimension
+            attn_scores = torch.sigmoid(F.linear(tangent, self.attention_weight, self.attention_bias))
+            scaled = tangent * self.scale * attn_scores
+        else:
+            scaled = tangent * self.scale
         
         # Map back to hyperbolic space
         evolved = HyperbolicOps.exp_map_zero(scaled, self.c)
         
+        # Apply residual connection in hyperbolic space via Möbius addition
+        if self.use_residual:
+            # Gate value between 0 and 1
+            gate = torch.sigmoid(self.residual_gate)
+            # Blend in tangent space for stability
+            evolved_tangent = HyperbolicOps.log_map_zero(evolved, self.c)
+            blended_tangent = gate * evolved_tangent + (1 - gate) * tangent
+            evolved = HyperbolicOps.exp_map_zero(blended_tangent, self.c)
+            
+            # Log statistics
+            self.last_evolution_stats = {
+                "gate_value": gate.item(),
+                "scale_mean": self.scale.mean().item(),
+                "scale_std": self.scale.std().item(),
+            }
+        
         return evolved
+    
+    def get_evolution_stats(self):
+        """Get statistics about the last evolution step."""
+        return self.last_evolution_stats
 
 
 class HyperbolicEntityInit(nn.Module):

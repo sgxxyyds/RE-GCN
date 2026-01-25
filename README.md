@@ -141,6 +141,26 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--test-history-len` | 测试历史长度 | 20 |
 | `--encoder` | 编码器类型 | hyperbolic_uvrgcn |
 | `--decoder` | 解码器类型 | hyperbolic_convtranse |
+| `--use-residual` | 使用残差连接进行时间演化（新） | True |
+| `--learn-curvature` | 训练时学习曲率参数（新） | False |
+| `--verbose` | 启用详细调试日志（新） | False |
+| `--log-file` | 将日志保存到文件（新） | False |
+| `--run-analysis` | 运行分析模式，记录详细统计信息（新） | False |
+
+### 优化功能（v2更新）
+
+本模型包含以下架构优化：
+
+1. **时间半径演化的残差连接**：通过可学习的门控机制，在时间演化过程中保持稳定性
+2. **可学习曲率**：可选择在训练过程中学习最优曲率参数
+3. **综合日志系统**：
+   - 嵌入统计（范数、半径分布）
+   - 损失分解（实体/关系/静态）
+   - 梯度统计
+   - 时间门控值
+   - 训练进度和指标
+
+使用 `--run-analysis --verbose --log-file` 启用完整的日志记录。
 
 ### 评估模型
 

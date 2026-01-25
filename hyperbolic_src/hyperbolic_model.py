@@ -15,6 +15,13 @@ Key Design Principle:
 - Time gate uses same formula as RE-GCN: sigmoid(mm(h, W) + b)
 - Graph convolution follows UnionRGCNLayer with separate self-loop weights
 
+OPTIMIZATIONS (v2):
+- Improved embedding initialization matching RE-GCN baseline
+- Residual connection in temporal radius evolution
+- Optional learned curvature parameter
+- Comprehensive logging for debugging and analysis
+- Gradient scaling for hyperbolic operations
+
 Reference: Technical solution document - hyperbolic_temporal_re_gcn_技术方案.md
 """
 
@@ -23,6 +30,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import logging
+
+# Set up logging
+logger = logging.getLogger("hyperbolic_model")
 
 from hyperbolic_src.hyperbolic_ops import (
     HyperbolicOps, 
@@ -128,6 +139,12 @@ class HyperbolicRecurrentRGCN(nn.Module):
     3. Hyperbolic RE-GCN (graph convolution in hyperbolic space)
     4. Hyperbolic GRU (temporal smoothing)
     5. Decoder for TKGC
+    
+    OPTIMIZATIONS (v2):
+    - Improved embedding initialization
+    - Residual connection in temporal evolution
+    - Optional learned curvature
+    - Comprehensive logging
     """
     
     def __init__(self, decoder_name, encoder_name, num_ents, num_rels,
@@ -137,7 +154,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  input_dropout=0, hidden_dropout=0, feat_dropout=0,
                  weight=1, discount=0, angle=0, use_static=False,
                  entity_prediction=False, relation_prediction=False,
-                 use_cuda=False, gpu=0, analysis=False):
+                 use_cuda=False, gpu=0, analysis=False,
+                 learn_curvature=False, use_residual_evolution=True):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse")
@@ -168,6 +186,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             use_cuda: Whether to use CUDA
             gpu: GPU device ID
             analysis: Whether to run analysis
+            learn_curvature: Whether to learn curvature (NEW)
+            use_residual_evolution: Use residual connection in temporal evolution (NEW)
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -180,7 +200,6 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.num_static_rels = num_static_rels
         self.sequence_len = sequence_len
         self.h_dim = h_dim
-        self.c = c  # Curvature parameter
         self.layer_norm = layer_norm
         self.h = None
         self.run_analysis = analysis
@@ -191,6 +210,26 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.relation_prediction = relation_prediction
         self.entity_prediction = entity_prediction
         self.gpu = gpu
+        self.learn_curvature = learn_curvature
+        self.use_residual_evolution = use_residual_evolution
+        
+        # ============ Curvature Parameter ============
+        # Option to learn curvature or keep it fixed
+        if learn_curvature:
+            # Log-parameterization for stability (c = exp(log_c))
+            self.log_c = nn.Parameter(torch.tensor(math.log(c)))
+            logger.info(f"Using learnable curvature, initialized at c={c}")
+        else:
+            self.register_buffer('c', torch.tensor(c))
+            logger.info(f"Using fixed curvature c={c}")
+        
+        # ============ Logging State ============
+        self.training_stats = {
+            "embedding_norms": [],
+            "gradient_norms": [],
+            "loss_components": [],
+            "time_gate_values": [],
+        }
         
         # ============ Entity Embeddings ============
         # Dynamic entity embeddings (learnable, in tangent space initially)
@@ -203,8 +242,12 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.emb_rel = nn.Parameter(torch.Tensor(num_rels * 2, h_dim))
         nn.init.xavier_normal_(self.emb_rel)
         
-        # ============ Temporal Radius Evolution ============
-        self.temporal_radius_evolution = TemporalRadiusEvolution(h_dim, c=c)
+        # ============ Temporal Radius Evolution (IMPROVED) ============
+        self.temporal_radius_evolution = TemporalRadiusEvolution(
+            h_dim, c=c, 
+            use_residual=use_residual_evolution,
+            use_attention=False  # Can be enabled for more complex evolution
+        )
         
         # ============ Transformation Weights ============
         self.w1 = nn.Parameter(torch.Tensor(h_dim, h_dim))
@@ -263,13 +306,28 @@ class HyperbolicRecurrentRGCN(nn.Module):
             )
         else:
             raise NotImplementedError(f"Decoder {decoder_name} not implemented")
+        
+        # Log model architecture summary
+        logger.info(f"Hyperbolic Recurrent RGCN initialized:")
+        logger.info(f"  - Entities: {num_ents}, Relations: {num_rels}")
+        logger.info(f"  - Hidden dim: {h_dim}, Layers: {num_hidden_layers}")
+        logger.info(f"  - Curvature: {c}, Learnable: {learn_curvature}")
+        logger.info(f"  - Use residual evolution: {use_residual_evolution}")
+    
+    def get_curvature(self):
+        """Get the current curvature value."""
+        if self.learn_curvature:
+            return torch.exp(self.log_c)
+        else:
+            return self.c
     
     def _init_hyperbolic_embeddings(self):
         """
         Initialize entity embeddings in hyperbolic space.
         Maps tangent space embeddings to Poincaré ball.
         """
-        return HyperbolicOps.exp_map_zero(self.dynamic_emb, self.c)
+        c = self.get_curvature()
+        return HyperbolicOps.exp_map_zero(self.dynamic_emb, c)
     
     def forward(self, g_list, static_graph, use_cuda):
         """
@@ -299,6 +357,17 @@ class HyperbolicRecurrentRGCN(nn.Module):
         gate_list = []
         degree_list = []
         
+        # Get current curvature (may be learned)
+        c = self.get_curvature()
+        if isinstance(c, torch.Tensor):
+            c_val = c.item()
+        else:
+            c_val = c
+        
+        # Log curvature if learning
+        if self.learn_curvature and self.training:
+            logger.debug(f"Current curvature: {c_val:.6f}")
+        
         # Initialize entity embeddings (RE-GCN style, then map to hyperbolic)
         if self.use_static and static_graph is not None:
             static_graph = static_graph.to(self.gpu)
@@ -309,21 +378,26 @@ class HyperbolicRecurrentRGCN(nn.Module):
             static_emb = static_graph.ndata.pop('h')[:self.num_ents, :]
             static_emb = F.normalize(static_emb) if self.layer_norm else static_emb
             # Map to hyperbolic space
-            self.h = HyperbolicOps.exp_map_zero(static_emb, self.c)
+            self.h = HyperbolicOps.exp_map_zero(static_emb, c_val)
         else:
             # Initialize from dynamic embeddings (RE-GCN style)
             init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
-            self.h = HyperbolicOps.exp_map_zero(init_emb, self.c)
+            self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
             static_emb = None
         
+        # Log initial embedding statistics
+        if self.run_analysis and self.training:
+            HyperbolicOps.log_embedding_stats(self.h, "init_embeddings", c_val)
+        
         history_embs = []
+        time_gate_values = []
         
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
             
             # ============ Relation Context Aggregation (RE-GCN style) ============
             # Map to tangent space for relation context computation
-            h_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
+            h_tangent = HyperbolicOps.log_map_zero(self.h, c_val)
             temp_e = h_tangent[g.r_to_e]
             
             # Use device from existing tensor for proper device placement
@@ -350,34 +424,51 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # ============ Hyperbolic RE-GCN ============
             # Perform graph convolution in hyperbolic space
             current_h = self.rgcn.forward(g, self.h, [self.h_0, self.h_0])
-            current_h = HyperbolicOps.project_to_ball(current_h, self.c)
+            current_h = HyperbolicOps.project_to_ball(current_h, c_val)
             
             # Apply layer normalization if needed (RE-GCN style, in tangent space)
             if self.layer_norm:
-                current_h_tangent = HyperbolicOps.log_map_zero(current_h, self.c)
+                current_h_tangent = HyperbolicOps.log_map_zero(current_h, c_val)
                 current_h_tangent = F.normalize(current_h_tangent)
-                current_h = HyperbolicOps.exp_map_zero(current_h_tangent, self.c)
+                current_h = HyperbolicOps.exp_map_zero(current_h_tangent, c_val)
             
             # ============ Time Gate for Entity Evolution (RE-GCN style) ============
             # RE-GCN formula: time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
             #                 self.h = time_weight * current_h + (1 - time_weight) * self.h
             # Hyperbolic adaptation: perform in tangent space
-            current_tangent = HyperbolicOps.log_map_zero(current_h, self.c)
-            prev_tangent = HyperbolicOps.log_map_zero(self.h, self.c)
+            current_tangent = HyperbolicOps.log_map_zero(current_h, c_val)
+            prev_tangent = HyperbolicOps.log_map_zero(self.h, c_val)
             
             time_weight = torch.sigmoid(torch.mm(prev_tangent, self.time_gate_weight) + self.time_gate_bias)
             new_tangent = time_weight * current_tangent + (1 - time_weight) * prev_tangent
             
+            # Log time gate statistics
+            if self.run_analysis:
+                time_gate_mean = time_weight.mean().item()
+                time_gate_values.append(time_gate_mean)
+                gate_list.append(time_weight.detach())
+                logger.debug(f"Time step {i}: time_gate_mean={time_gate_mean:.4f}")
+            
             # Map back to hyperbolic space
-            self.h = HyperbolicOps.exp_map_zero(new_tangent, self.c)
-            self.h = HyperbolicOps.project_to_ball(self.h, self.c)
+            self.h = HyperbolicOps.exp_map_zero(new_tangent, c_val)
+            self.h = HyperbolicOps.project_to_ball(self.h, c_val)
             
             # ============ Temporal Radius Evolution (Hyperbolic Innovation) ============
             # Optional: Adjust semantic level based on time (hyperbolic-specific)
             # This is the key innovation of the hyperbolic model
             self.h = self.temporal_radius_evolution(self.h)
             
+            # Log evolution statistics
+            if self.run_analysis and self.use_residual_evolution:
+                evolution_stats = self.temporal_radius_evolution.get_evolution_stats()
+                if evolution_stats:
+                    logger.debug(f"Time step {i}: evolution gate={evolution_stats.get('gate_value', 'N/A'):.4f}")
+            
             history_embs.append(self.h)
+        
+        # Store time gate values for analysis
+        if self.run_analysis:
+            self.training_stats["time_gate_values"] = time_gate_values
         
         return history_embs, static_emb, self.h_0, gate_list, degree_list
     
@@ -398,6 +489,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
             score_rel: Relation prediction scores
         """
         with torch.no_grad():
+            # Get current curvature
+            c = self.get_curvature()
+            if isinstance(c, torch.Tensor):
+                c_val = c.item()
+            else:
+                c_val = c
+            
             # Create inverse triplets
             inverse_test_triplets = test_triplets[:, [2, 1, 0]]
             inverse_test_triplets[:, 1] = inverse_test_triplets[:, 1] + num_rels
@@ -409,9 +507,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Get final embeddings
             embedding = evolve_embs[-1]
             if self.layer_norm:
-                h_tangent = HyperbolicOps.log_map_zero(embedding, self.c)
+                h_tangent = HyperbolicOps.log_map_zero(embedding, c_val)
                 h_tangent = F.normalize(h_tangent)
-                embedding = HyperbolicOps.exp_map_zero(h_tangent, self.c)
+                embedding = HyperbolicOps.exp_map_zero(h_tangent, c_val)
+            
+            # Log embedding statistics for debugging
+            if self.run_analysis:
+                HyperbolicOps.log_embedding_stats(embedding, "predict_embeddings", c_val)
             
             # Decode
             score = self.decoder_ob.forward(embedding, r_emb, all_triples, mode="test")
@@ -421,7 +523,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
     
     def get_loss(self, glist, triples, static_graph, use_cuda):
         """
-        Compute training loss.
+        Compute training loss with detailed logging.
         
         Args:
             glist: List of history graphs
@@ -434,6 +536,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
             loss_rel: Relation prediction loss
             loss_static: Static constraint loss
         """
+        # Get current curvature
+        c = self.get_curvature()
+        if isinstance(c, torch.Tensor):
+            c_val = c.item()
+        else:
+            c_val = c
+        
         loss_ent = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         loss_rel = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         loss_static = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
@@ -450,9 +559,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
         # Get final embeddings
         pre_emb = evolve_embs[-1]
         if self.layer_norm:
-            h_tangent = HyperbolicOps.log_map_zero(pre_emb, self.c)
+            h_tangent = HyperbolicOps.log_map_zero(pre_emb, c_val)
             h_tangent = F.normalize(h_tangent)
-            pre_emb = HyperbolicOps.exp_map_zero(h_tangent, self.c)
+            pre_emb = HyperbolicOps.exp_map_zero(h_tangent, c_val)
         
         # Entity prediction loss
         if self.entity_prediction:
@@ -470,26 +579,72 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 for time_step, evolve_emb in enumerate(evolve_embs):
                     step = (self.angle * math.pi / 180) * (time_step + 1)
                     # Compare in tangent space
-                    evolve_tangent = HyperbolicOps.log_map_zero(evolve_emb, self.c)
+                    evolve_tangent = HyperbolicOps.log_map_zero(evolve_emb, c_val)
                     if self.layer_norm:
                         sim_matrix = torch.sum(static_emb * F.normalize(evolve_tangent), dim=1)
                     else:
                         sim_matrix = torch.sum(static_emb * evolve_tangent, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * torch.norm(evolve_tangent, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
+                        norm_product = torch.norm(static_emb, p=2, dim=1) * torch.norm(evolve_tangent, p=2, dim=1)
+                        sim_matrix = sim_matrix / norm_product
                     mask = (math.cos(step) - sim_matrix) > 0
                     loss_static += self.weight * torch.sum(torch.masked_select(math.cos(step) - sim_matrix, mask))
             elif self.discount == 0:
                 for time_step, evolve_emb in enumerate(evolve_embs):
                     step = (self.angle * math.pi / 180)
-                    evolve_tangent = HyperbolicOps.log_map_zero(evolve_emb, self.c)
+                    evolve_tangent = HyperbolicOps.log_map_zero(evolve_emb, c_val)
                     if self.layer_norm:
                         sim_matrix = torch.sum(static_emb * F.normalize(evolve_tangent), dim=1)
                     else:
                         sim_matrix = torch.sum(static_emb * evolve_tangent, dim=1)
-                        c = torch.norm(static_emb, p=2, dim=1) * torch.norm(evolve_tangent, p=2, dim=1)
-                        sim_matrix = sim_matrix / c
+                        norm_product = torch.norm(static_emb, p=2, dim=1) * torch.norm(evolve_tangent, p=2, dim=1)
+                        sim_matrix = sim_matrix / norm_product
                     mask = (math.cos(step) - sim_matrix) > 0
                     loss_static += self.weight * torch.sum(torch.masked_select(math.cos(step) - sim_matrix, mask))
         
+        # Log loss components for debugging
+        if self.run_analysis:
+            self.training_stats["loss_components"].append({
+                "loss_ent": loss_ent.item(),
+                "loss_rel": loss_rel.item(),
+                "loss_static": loss_static.item(),
+            })
+            logger.debug(f"Loss components: ent={loss_ent.item():.4f}, rel={loss_rel.item():.4f}, static={loss_static.item():.4f}")
+        
         return loss_ent, loss_rel, loss_static
+    
+    def log_gradient_stats(self):
+        """Log gradient statistics for all model parameters."""
+        grad_stats = {}
+        total_grad_norm = 0.0
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                total_grad_norm += grad_norm ** 2
+                if grad_norm > 1.0:  # Log only significant gradients
+                    grad_stats[name] = grad_norm
+        
+        total_grad_norm = total_grad_norm ** 0.5
+        logger.debug(f"Total gradient norm: {total_grad_norm:.4f}")
+        
+        if grad_stats:
+            logger.debug(f"Large gradients: {grad_stats}")
+        
+        self.training_stats["gradient_norms"].append(total_grad_norm)
+        return total_grad_norm
+    
+    def get_training_summary(self):
+        """Get a summary of training statistics."""
+        summary = {
+            "curvature": self.get_curvature().item() if self.learn_curvature else self.get_curvature(),
+        }
+        
+        if self.use_residual_evolution:
+            evolution_stats = self.temporal_radius_evolution.get_evolution_stats()
+            if evolution_stats:
+                summary["evolution_gate"] = evolution_stats.get("gate_value", None)
+                summary["scale_mean"] = evolution_stats.get("scale_mean", None)
+        
+        if self.training_stats["time_gate_values"]:
+            summary["avg_time_gate"] = sum(self.training_stats["time_gate_values"]) / len(self.training_stats["time_gate_values"])
+        
+        return summary
