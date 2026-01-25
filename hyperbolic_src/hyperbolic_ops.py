@@ -421,8 +421,9 @@ class TemporalRadiusEvolution(nn.Module):
                 "scale_std": effective_scale.std().item(),
             }
         else:
+            # effective_scale is always computed before this point
             self.last_evolution_stats = {
-                "scale_mean": effective_scale.mean().item() if 'effective_scale' in dir() else self.scale.mean().item(),
+                "scale_mean": effective_scale.mean().item(),
             }
         
         return evolved
