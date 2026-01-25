@@ -228,6 +228,10 @@ class HyperbolicOps:
         """
         Numerically stable arctanh operation.
         
+        Note: This is a utility function for custom hyperbolic operations.
+        It can be used when implementing custom decoders or distance functions
+        that require arctanh with numerical stability guarantees.
+        
         Args:
             x: Input tensor
             eps: Small epsilon for clamping
@@ -242,6 +246,10 @@ class HyperbolicOps:
     def get_curvature_scale(c):
         """
         Get the scale factor for the given curvature.
+        
+        Note: This is a utility function for computing curvature-dependent
+        scaling factors. Useful when implementing custom hyperbolic layers
+        or when debugging curvature-related issues.
         
         Args:
             c: Curvature parameter
