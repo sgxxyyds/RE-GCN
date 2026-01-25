@@ -1,0 +1,286 @@
+nohup: ignoring input
+Using backend: pytorch
+2026-01-25 07:15:41,295 - hyperbolic_main - INFO - ============================================================
+2026-01-25 07:15:41,295 - hyperbolic_main - INFO - Hyperbolic Temporal RE-GCN Training
+2026-01-25 07:15:41,295 - hyperbolic_main - INFO - ============================================================
+2026-01-25 07:15:41,295 - hyperbolic_main - INFO - Arguments: Namespace(add_static_graph=False, angle=10, batch_size=1, curvature=0.01, dataset='ICEWS14s', decoder='hyperbolic_convtranse', discount=1, dropout=0.2, encoder='hyperbolic_uvrgcn', entity_prediction=True, evaluate_every=1, feat_dropout=0.2, gpu=0, grad_norm=1.0, hidden_dropout=0.2, input_dropout=0.2, layer_norm=True, learn_curvature=False, log_file=False, lr=0.001, multi_step=False, n_bases=100, n_epochs=500, n_hidden=200, n_layers=2, opn='sub', relation_evaluation=False, relation_prediction=True, run_analysis=False, self_loop=True, skip_connect=False, task_weight=0.7, test=False, test_history_len=3, topk=10, train_history_len=3, use_residual=True, verbose=False, weight=1)
+2026-01-25 07:15:41,295 - hyperbolic_main - INFO - Loading graph data...
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO - Dataset: ICEWS14s
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO -   - Entities: 7128
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO -   - Relations: 230
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO -   - Train snapshots: 304
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO -   - Valid snapshots: 30
+2026-01-25 07:15:41,649 - hyperbolic_main - INFO -   - Test snapshots: 31
+2026-01-25 07:15:41,848 - hyperbolic_main - INFO - Model checkpoint: ../models/hyperbolic-ICEWS14s-hyperbolic_uvrgcn-hyperbolic_convtranse-ly2-c0.01-his3-weight:1-angle:10-dp0.2|0.2|0.2|0.2-res1-lc0-gpu0
+2026-01-25 07:15:41,875 - hyperbolic_main - INFO - CUDA available: True
+2026-01-25 07:15:41,875 - hyperbolic_main - INFO - Creating Hyperbolic Recurrent RGCN model...
+2026-01-25 07:15:41,875 - hyperbolic_model - INFO - Using fixed curvature c=0.01
+2026-01-25 07:15:41,937 - hyperbolic_model - INFO - Hyperbolic Recurrent RGCN initialized:
+2026-01-25 07:15:41,937 - hyperbolic_model - INFO -   - Entities: 7128, Relations: 230
+2026-01-25 07:15:41,937 - hyperbolic_model - INFO -   - Hidden dim: 200, Layers: 2
+2026-01-25 07:15:41,937 - hyperbolic_model - INFO -   - Curvature: 0.01, Learnable: False
+2026-01-25 07:15:41,937 - hyperbolic_model - INFO -   - Use residual evolution: True
+2026-01-25 07:15:41,938 - hyperbolic_main - INFO - Model parameters: 6,248,897 total, 6,248,897 trainable
+2026-01-25 07:15:44,058 - hyperbolic_main - INFO - Model moved to GPU 0
+2026-01-25 07:15:44,059 - hyperbolic_main - INFO - Optimizer: Adam, lr=0.001, weight_decay=1e-5
+2026-01-25 07:15:44,059 - hyperbolic_main - INFO - ========================================
+2026-01-25 07:15:44,059 - hyperbolic_main - INFO - Starting Training
+2026-01-25 07:15:44,059 - hyperbolic_main - INFO - ========================================
+/home/sunguoxi/.conda/envs/regcn/lib/python3.7/site-packages/dgl/base.py:45: DGLWarning: Recommend creating graphs by `dgl.graph(data)` instead of `dgl.DGLGraph(data)`.
+  return warnings.warn(message, category=category, stacklevel=1)
+../rgcn/utils.py:112: UserWarning: This overload of nonzero is deprecated:
+	nonzero(Tensor input, *, Tensor out)
+Consider using one of the following signatures instead:
+	nonzero(Tensor input, *, bool as_tuple) (Triggered internally at  /opt/conda/conda-bld/pytorch_1595629427478/work/torch/csrc/utils/python_arg_parser.cpp:766.)
+  in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
+2026-01-25 07:16:53,309 - hyperbolic_main - INFO - Epoch 0000 | Loss: 5.6298 | E/R/S: 6.4319/3.7581/0.0000 | Best MRR: 0.0000 | Time: 69.2s
+2026-01-25 07:17:55,447 - hyperbolic_main - INFO - Epoch 0001 | Loss: 4.9539 | E/R/S: 5.6034/3.4386/0.0000 | Best MRR: 0.0000 | Time: 62.1s
+2026-01-25 07:17:55,447 - hyperbolic_main - INFO - Running validation at epoch 1...
+2026-01-25 07:18:00,073 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.2970, MRR (filter): 0.3072
+2026-01-25 07:18:00,073 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3632, Rel MRR (filter): 0.4145
+2026-01-25 07:18:00,073 - hyperbolic_main - INFO - Validation - MRR: raw=0.2970, filter=0.3072
+2026-01-25 07:18:00,073 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3632, filter=0.4145
+2026-01-25 07:18:00,227 - hyperbolic_main - INFO - New best model saved! MRR: 0.2970
+2026-01-25 07:19:02,253 - hyperbolic_main - INFO - Epoch 0002 | Loss: 4.6013 | E/R/S: 5.1562/3.3066/0.0000 | Best MRR: 0.2970 | Time: 62.0s
+2026-01-25 07:19:02,253 - hyperbolic_main - INFO - Running validation at epoch 2...
+2026-01-25 07:19:06,863 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3227, MRR (filter): 0.3344
+2026-01-25 07:19:06,863 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3756, Rel MRR (filter): 0.4303
+2026-01-25 07:19:06,863 - hyperbolic_main - INFO - Validation - MRR: raw=0.3227, filter=0.3344
+2026-01-25 07:19:06,864 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3756, filter=0.4303
+2026-01-25 07:19:07,008 - hyperbolic_main - INFO - New best model saved! MRR: 0.3227
+2026-01-25 07:20:10,445 - hyperbolic_main - INFO - Epoch 0003 | Loss: 4.3519 | E/R/S: 4.8389/3.2155/0.0000 | Best MRR: 0.3227 | Time: 63.4s
+2026-01-25 07:20:10,445 - hyperbolic_main - INFO - Running validation at epoch 3...
+2026-01-25 07:20:15,050 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3452, MRR (filter): 0.3580
+2026-01-25 07:20:15,050 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3838, Rel MRR (filter): 0.4398
+2026-01-25 07:20:15,051 - hyperbolic_main - INFO - Validation - MRR: raw=0.3452, filter=0.3580
+2026-01-25 07:20:15,051 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3838, filter=0.4398
+2026-01-25 07:20:15,174 - hyperbolic_main - INFO - New best model saved! MRR: 0.3452
+2026-01-25 07:21:17,151 - hyperbolic_main - INFO - Epoch 0004 | Loss: 4.1562 | E/R/S: 4.5899/3.1443/0.0000 | Best MRR: 0.3452 | Time: 62.0s
+2026-01-25 07:21:17,151 - hyperbolic_main - INFO - Running validation at epoch 4...
+2026-01-25 07:21:21,776 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3618, MRR (filter): 0.3753
+2026-01-25 07:21:21,776 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3918, Rel MRR (filter): 0.4467
+2026-01-25 07:21:21,777 - hyperbolic_main - INFO - Validation - MRR: raw=0.3618, filter=0.3753
+2026-01-25 07:21:21,777 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3918, filter=0.4467
+2026-01-25 07:21:21,902 - hyperbolic_main - INFO - New best model saved! MRR: 0.3618
+2026-01-25 07:22:23,860 - hyperbolic_main - INFO - Epoch 0005 | Loss: 3.9802 | E/R/S: 4.3661/3.0800/0.0000 | Best MRR: 0.3618 | Time: 62.0s
+2026-01-25 07:22:23,860 - hyperbolic_main - INFO - Running validation at epoch 5...
+2026-01-25 07:22:28,460 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3730, MRR (filter): 0.3868
+2026-01-25 07:22:28,461 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3946, Rel MRR (filter): 0.4531
+2026-01-25 07:22:28,461 - hyperbolic_main - INFO - Validation - MRR: raw=0.3730, filter=0.3868
+2026-01-25 07:22:28,461 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3946, filter=0.4531
+2026-01-25 07:22:28,589 - hyperbolic_main - INFO - New best model saved! MRR: 0.3730
+2026-01-25 07:23:30,552 - hyperbolic_main - INFO - Epoch 0006 | Loss: 3.8213 | E/R/S: 4.1644/3.0208/0.0000 | Best MRR: 0.3730 | Time: 62.0s
+2026-01-25 07:23:30,552 - hyperbolic_main - INFO - Running validation at epoch 6...
+2026-01-25 07:23:35,154 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3804, MRR (filter): 0.3940
+2026-01-25 07:23:35,154 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3982, Rel MRR (filter): 0.4562
+2026-01-25 07:23:35,155 - hyperbolic_main - INFO - Validation - MRR: raw=0.3804, filter=0.3940
+2026-01-25 07:23:35,155 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3982, filter=0.4562
+2026-01-25 07:23:35,281 - hyperbolic_main - INFO - New best model saved! MRR: 0.3804
+2026-01-25 07:24:37,271 - hyperbolic_main - INFO - Epoch 0007 | Loss: 3.6838 | E/R/S: 3.9884/2.9730/0.0000 | Best MRR: 0.3804 | Time: 62.0s
+2026-01-25 07:24:37,271 - hyperbolic_main - INFO - Running validation at epoch 7...
+2026-01-25 07:24:41,878 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3866, MRR (filter): 0.4003
+2026-01-25 07:24:41,879 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3998, Rel MRR (filter): 0.4590
+2026-01-25 07:24:41,879 - hyperbolic_main - INFO - Validation - MRR: raw=0.3866, filter=0.4003
+2026-01-25 07:24:41,879 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3998, filter=0.4590
+2026-01-25 07:24:42,006 - hyperbolic_main - INFO - New best model saved! MRR: 0.3866
+2026-01-25 07:25:43,984 - hyperbolic_main - INFO - Epoch 0008 | Loss: 3.5622 | E/R/S: 3.8340/2.9278/0.0000 | Best MRR: 0.3866 | Time: 62.0s
+2026-01-25 07:25:43,984 - hyperbolic_main - INFO - Running validation at epoch 8...
+2026-01-25 07:25:48,590 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3929, MRR (filter): 0.4070
+2026-01-25 07:25:48,590 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4007, Rel MRR (filter): 0.4590
+2026-01-25 07:25:48,590 - hyperbolic_main - INFO - Validation - MRR: raw=0.3929, filter=0.4070
+2026-01-25 07:25:48,591 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4007, filter=0.4590
+2026-01-25 07:25:48,714 - hyperbolic_main - INFO - New best model saved! MRR: 0.3929
+2026-01-25 07:26:50,676 - hyperbolic_main - INFO - Epoch 0009 | Loss: 3.4510 | E/R/S: 3.6936/2.8851/0.0000 | Best MRR: 0.3929 | Time: 62.0s
+2026-01-25 07:26:50,676 - hyperbolic_main - INFO - Running validation at epoch 9...
+2026-01-25 07:26:55,283 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3977, MRR (filter): 0.4122
+2026-01-25 07:26:55,283 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3970, Rel MRR (filter): 0.4509
+2026-01-25 07:26:55,284 - hyperbolic_main - INFO - Validation - MRR: raw=0.3977, filter=0.4122
+2026-01-25 07:26:55,284 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3970, filter=0.4509
+2026-01-25 07:26:55,412 - hyperbolic_main - INFO - New best model saved! MRR: 0.3977
+2026-01-25 07:27:57,392 - hyperbolic_main - INFO - Epoch 0010 | Loss: 3.3612 | E/R/S: 3.5801/2.8503/0.0000 | Best MRR: 0.3977 | Time: 62.0s
+2026-01-25 07:27:57,392 - hyperbolic_main - INFO - Running validation at epoch 10...
+2026-01-25 07:28:02,003 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4019, MRR (filter): 0.4167
+2026-01-25 07:28:02,003 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4012, Rel MRR (filter): 0.4606
+2026-01-25 07:28:02,004 - hyperbolic_main - INFO - Validation - MRR: raw=0.4019, filter=0.4167
+2026-01-25 07:28:02,004 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4012, filter=0.4606
+2026-01-25 07:28:02,131 - hyperbolic_main - INFO - New best model saved! MRR: 0.4019
+2026-01-25 07:29:04,201 - hyperbolic_main - INFO - Epoch 0011 | Loss: 3.2716 | E/R/S: 3.4694/2.8101/0.0000 | Best MRR: 0.4019 | Time: 62.1s
+2026-01-25 07:29:04,202 - hyperbolic_main - INFO - Running validation at epoch 11...
+2026-01-25 07:29:08,834 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3993, Rel MRR (filter): 0.4575
+2026-01-25 07:29:08,834 - hyperbolic_main - INFO - Validation - MRR: raw=0.4025, filter=0.4170
+2026-01-25 07:29:08,834 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3993, filter=0.4575
+2026-01-25 07:29:08,962 - hyperbolic_main - INFO - New best model saved! MRR: 0.4025
+2026-01-25 07:30:15,868 - hyperbolic_main - INFO - Epoch 0012 | Loss: 3.1955 | E/R/S: 3.3733/2.7808/0.0000 | Best MRR: 0.4025 | Time: 66.9s
+2026-01-25 07:30:15,869 - hyperbolic_main - INFO - Running validation at epoch 12...
+2026-01-25 07:30:20,494 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4037, MRR (filter): 0.4185
+2026-01-25 07:30:20,494 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4003, Rel MRR (filter): 0.4565
+2026-01-25 07:30:20,495 - hyperbolic_main - INFO - Validation - MRR: raw=0.4037, filter=0.4185
+2026-01-25 07:30:20,495 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4003, filter=0.4565
+2026-01-25 07:30:20,621 - hyperbolic_main - INFO - New best model saved! MRR: 0.4037
+2026-01-25 07:31:24,721 - hyperbolic_main - INFO - Epoch 0013 | Loss: 3.1205 | E/R/S: 3.2814/2.7448/0.0000 | Best MRR: 0.4037 | Time: 64.1s
+2026-01-25 07:31:24,721 - hyperbolic_main - INFO - Running validation at epoch 13...
+2026-01-25 07:31:29,330 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4056, MRR (filter): 0.4199
+2026-01-25 07:31:29,331 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4002, Rel MRR (filter): 0.4580
+2026-01-25 07:31:29,331 - hyperbolic_main - INFO - Validation - MRR: raw=0.4056, filter=0.4199
+2026-01-25 07:31:29,331 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4002, filter=0.4580
+2026-01-25 07:31:29,459 - hyperbolic_main - INFO - New best model saved! MRR: 0.4056
+2026-01-25 07:32:31,444 - hyperbolic_main - INFO - Epoch 0014 | Loss: 3.0533 | E/R/S: 3.1981/2.7155/0.0000 | Best MRR: 0.4056 | Time: 62.0s
+2026-01-25 07:32:31,445 - hyperbolic_main - INFO - Running validation at epoch 14...
+2026-01-25 07:32:36,057 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4071, MRR (filter): 0.4214
+2026-01-25 07:32:36,057 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4004, Rel MRR (filter): 0.4576
+2026-01-25 07:32:36,058 - hyperbolic_main - INFO - Validation - MRR: raw=0.4071, filter=0.4214
+2026-01-25 07:32:36,058 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4004, filter=0.4576
+2026-01-25 07:32:36,187 - hyperbolic_main - INFO - New best model saved! MRR: 0.4071
+2026-01-25 07:33:38,174 - hyperbolic_main - INFO - Epoch 0015 | Loss: 2.9954 | E/R/S: 3.1261/2.6906/0.0000 | Best MRR: 0.4071 | Time: 62.0s
+2026-01-25 07:33:38,174 - hyperbolic_main - INFO - Running validation at epoch 15...
+2026-01-25 07:33:42,780 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4086, MRR (filter): 0.4237
+2026-01-25 07:33:42,780 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3967, Rel MRR (filter): 0.4506
+2026-01-25 07:33:42,781 - hyperbolic_main - INFO - Validation - MRR: raw=0.4086, filter=0.4237
+2026-01-25 07:33:42,781 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3967, filter=0.4506
+2026-01-25 07:33:42,908 - hyperbolic_main - INFO - New best model saved! MRR: 0.4086
+2026-01-25 07:34:44,902 - hyperbolic_main - INFO - Epoch 0016 | Loss: 2.9366 | E/R/S: 3.0553/2.6596/0.0000 | Best MRR: 0.4086 | Time: 62.0s
+2026-01-25 07:34:44,902 - hyperbolic_main - INFO - Running validation at epoch 16...
+2026-01-25 07:34:49,511 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4090, MRR (filter): 0.4245
+2026-01-25 07:34:49,511 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3978, Rel MRR (filter): 0.4541
+2026-01-25 07:34:49,512 - hyperbolic_main - INFO - Validation - MRR: raw=0.4090, filter=0.4245
+2026-01-25 07:34:49,512 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3978, filter=0.4541
+2026-01-25 07:34:49,638 - hyperbolic_main - INFO - New best model saved! MRR: 0.4090
+2026-01-25 07:35:55,697 - hyperbolic_main - INFO - Epoch 0017 | Loss: 2.8772 | E/R/S: 2.9817/2.6335/0.0000 | Best MRR: 0.4090 | Time: 66.1s
+2026-01-25 07:35:55,698 - hyperbolic_main - INFO - Running validation at epoch 17...
+2026-01-25 07:36:00,319 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4119, MRR (filter): 0.4271
+2026-01-25 07:36:00,320 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3958, Rel MRR (filter): 0.4514
+2026-01-25 07:36:00,320 - hyperbolic_main - INFO - Validation - MRR: raw=0.4119, filter=0.4271
+2026-01-25 07:36:00,320 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3958, filter=0.4514
+2026-01-25 07:36:00,454 - hyperbolic_main - INFO - New best model saved! MRR: 0.4119
+2026-01-25 07:37:06,525 - hyperbolic_main - INFO - Epoch 0018 | Loss: 2.8214 | E/R/S: 2.9142/2.6049/0.0000 | Best MRR: 0.4119 | Time: 66.1s
+2026-01-25 07:37:06,525 - hyperbolic_main - INFO - Running validation at epoch 18...
+2026-01-25 07:37:11,137 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4077, MRR (filter): 0.4227
+2026-01-25 07:37:11,137 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.4017, Rel MRR (filter): 0.4593
+2026-01-25 07:37:11,138 - hyperbolic_main - INFO - Validation - MRR: raw=0.4077, filter=0.4227
+2026-01-25 07:37:11,138 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.4017, filter=0.4593
+2026-01-25 07:38:13,157 - hyperbolic_main - INFO - Epoch 0019 | Loss: 2.7767 | E/R/S: 2.8609/2.5802/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:38:13,158 - hyperbolic_main - INFO - Running validation at epoch 19...
+2026-01-25 07:38:17,782 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4070, MRR (filter): 0.4216
+2026-01-25 07:38:17,783 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3962, Rel MRR (filter): 0.4529
+2026-01-25 07:38:17,783 - hyperbolic_main - INFO - Validation - MRR: raw=0.4070, filter=0.4216
+2026-01-25 07:38:17,783 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3962, filter=0.4529
+2026-01-25 07:39:19,740 - hyperbolic_main - INFO - Epoch 0020 | Loss: 2.7215 | E/R/S: 2.7943/2.5515/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:39:19,740 - hyperbolic_main - INFO - Running validation at epoch 20...
+2026-01-25 07:39:24,345 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4065, MRR (filter): 0.4206
+2026-01-25 07:39:24,345 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3962, Rel MRR (filter): 0.4525
+2026-01-25 07:39:24,346 - hyperbolic_main - INFO - Validation - MRR: raw=0.4065, filter=0.4206
+2026-01-25 07:39:24,346 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3962, filter=0.4525
+2026-01-25 07:40:26,295 - hyperbolic_main - INFO - Epoch 0021 | Loss: 2.6772 | E/R/S: 2.7402/2.5300/0.0000 | Best MRR: 0.4119 | Time: 61.9s
+2026-01-25 07:40:26,296 - hyperbolic_main - INFO - Running validation at epoch 21...
+2026-01-25 07:40:30,904 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4058, MRR (filter): 0.4205
+2026-01-25 07:40:30,904 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3953, Rel MRR (filter): 0.4523
+2026-01-25 07:40:30,905 - hyperbolic_main - INFO - Validation - MRR: raw=0.4058, filter=0.4205
+2026-01-25 07:40:30,905 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3953, filter=0.4523
+2026-01-25 07:41:34,038 - hyperbolic_main - INFO - Epoch 0022 | Loss: 2.6311 | E/R/S: 2.6858/2.5033/0.0000 | Best MRR: 0.4119 | Time: 63.1s
+2026-01-25 07:41:34,038 - hyperbolic_main - INFO - Running validation at epoch 22...
+2026-01-25 07:41:38,647 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4050, MRR (filter): 0.4193
+2026-01-25 07:41:38,647 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3952, Rel MRR (filter): 0.4515
+2026-01-25 07:41:38,647 - hyperbolic_main - INFO - Validation - MRR: raw=0.4050, filter=0.4193
+2026-01-25 07:41:38,648 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3952, filter=0.4515
+2026-01-25 07:42:40,599 - hyperbolic_main - INFO - Epoch 0023 | Loss: 2.5964 | E/R/S: 2.6457/2.4814/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:42:40,600 - hyperbolic_main - INFO - Running validation at epoch 23...
+2026-01-25 07:42:45,224 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4062, MRR (filter): 0.4208
+2026-01-25 07:42:45,224 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3946, Rel MRR (filter): 0.4496
+2026-01-25 07:42:45,225 - hyperbolic_main - INFO - Validation - MRR: raw=0.4062, filter=0.4208
+2026-01-25 07:42:45,225 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3946, filter=0.4496
+2026-01-25 07:43:47,187 - hyperbolic_main - INFO - Epoch 0024 | Loss: 2.5493 | E/R/S: 2.5900/2.4542/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:43:47,187 - hyperbolic_main - INFO - Running validation at epoch 24...
+2026-01-25 07:43:51,807 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4047, MRR (filter): 0.4190
+2026-01-25 07:43:51,807 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3894, Rel MRR (filter): 0.4414
+2026-01-25 07:43:51,807 - hyperbolic_main - INFO - Validation - MRR: raw=0.4047, filter=0.4190
+2026-01-25 07:43:51,807 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3894, filter=0.4414
+2026-01-25 07:44:53,779 - hyperbolic_main - INFO - Epoch 0025 | Loss: 2.5095 | E/R/S: 2.5415/2.4348/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:44:53,780 - hyperbolic_main - INFO - Running validation at epoch 25...
+2026-01-25 07:44:58,385 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4088, MRR (filter): 0.4238
+2026-01-25 07:44:58,386 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3907, Rel MRR (filter): 0.4436
+2026-01-25 07:44:58,386 - hyperbolic_main - INFO - Validation - MRR: raw=0.4088, filter=0.4238
+2026-01-25 07:44:58,386 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3907, filter=0.4436
+2026-01-25 07:46:03,405 - hyperbolic_main - INFO - Epoch 0026 | Loss: 2.4714 | E/R/S: 2.4953/2.4155/0.0000 | Best MRR: 0.4119 | Time: 65.0s
+2026-01-25 07:46:03,406 - hyperbolic_main - INFO - Running validation at epoch 26...
+2026-01-25 07:46:08,026 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3953, Rel MRR (filter): 0.4521
+2026-01-25 07:46:08,027 - hyperbolic_main - INFO - Validation - MRR: raw=0.4046, filter=0.4192
+2026-01-25 07:46:08,027 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3953, filter=0.4521
+2026-01-25 07:47:10,962 - hyperbolic_main - INFO - Epoch 0027 | Loss: 2.4353 | E/R/S: 2.4513/2.3982/0.0000 | Best MRR: 0.4119 | Time: 62.9s
+2026-01-25 07:47:10,962 - hyperbolic_main - INFO - Running validation at epoch 27...
+2026-01-25 07:47:15,567 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.4021, MRR (filter): 0.4166
+2026-01-25 07:47:15,567 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3883, Rel MRR (filter): 0.4425
+2026-01-25 07:47:15,568 - hyperbolic_main - INFO - Validation - MRR: raw=0.4021, filter=0.4166
+2026-01-25 07:47:15,568 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3883, filter=0.4425
+2026-01-25 07:48:17,529 - hyperbolic_main - INFO - Epoch 0028 | Loss: 2.4007 | E/R/S: 2.4117/2.3750/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:48:17,529 - hyperbolic_main - INFO - Running validation at epoch 28...
+2026-01-25 07:48:22,135 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3998, MRR (filter): 0.4144
+2026-01-25 07:48:22,135 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3897, Rel MRR (filter): 0.4424
+2026-01-25 07:48:22,136 - hyperbolic_main - INFO - Validation - MRR: raw=0.3998, filter=0.4144
+2026-01-25 07:48:22,136 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3897, filter=0.4424
+2026-01-25 07:49:24,874 - hyperbolic_main - INFO - Epoch 0029 | Loss: 2.3595 | E/R/S: 2.3647/2.3472/0.0000 | Best MRR: 0.4119 | Time: 62.7s
+2026-01-25 07:49:24,874 - hyperbolic_main - INFO - Running validation at epoch 29...
+2026-01-25 07:49:29,485 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3999, MRR (filter): 0.4142
+2026-01-25 07:49:29,485 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3874, Rel MRR (filter): 0.4394
+2026-01-25 07:49:29,485 - hyperbolic_main - INFO - Validation - MRR: raw=0.3999, filter=0.4142
+2026-01-25 07:49:29,486 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3874, filter=0.4394
+2026-01-25 07:50:31,453 - hyperbolic_main - INFO - Epoch 0030 | Loss: 2.3343 | E/R/S: 2.3360/2.3302/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:50:31,453 - hyperbolic_main - INFO - Running validation at epoch 30...
+2026-01-25 07:50:36,057 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3989, MRR (filter): 0.4125
+2026-01-25 07:50:36,057 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3884, Rel MRR (filter): 0.4395
+2026-01-25 07:50:36,058 - hyperbolic_main - INFO - Validation - MRR: raw=0.3989, filter=0.4125
+2026-01-25 07:50:36,058 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3884, filter=0.4395
+2026-01-25 07:51:38,305 - hyperbolic_main - INFO - Epoch 0031 | Loss: 2.3003 | E/R/S: 2.2961/2.3100/0.0000 | Best MRR: 0.4119 | Time: 62.2s
+2026-01-25 07:51:38,305 - hyperbolic_main - INFO - Running validation at epoch 31...
+2026-01-25 07:51:42,909 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3946, MRR (filter): 0.4082
+2026-01-25 07:51:42,909 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3882, Rel MRR (filter): 0.4416
+2026-01-25 07:51:42,909 - hyperbolic_main - INFO - Validation - MRR: raw=0.3946, filter=0.4082
+2026-01-25 07:51:42,910 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3882, filter=0.4416
+2026-01-25 07:52:44,891 - hyperbolic_main - INFO - Epoch 0032 | Loss: 2.2718 | E/R/S: 2.2631/2.2919/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:52:44,891 - hyperbolic_main - INFO - Running validation at epoch 32...
+2026-01-25 07:52:49,499 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3996, MRR (filter): 0.4138
+2026-01-25 07:52:49,499 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3841, Rel MRR (filter): 0.4346
+2026-01-25 07:52:49,499 - hyperbolic_main - INFO - Validation - MRR: raw=0.3996, filter=0.4138
+2026-01-25 07:52:49,499 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3841, filter=0.4346
+2026-01-25 07:53:51,461 - hyperbolic_main - INFO - Epoch 0033 | Loss: 2.2418 | E/R/S: 2.2298/2.2699/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:53:51,461 - hyperbolic_main - INFO - Running validation at epoch 33...
+2026-01-25 07:53:56,090 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3959, MRR (filter): 0.4096
+2026-01-25 07:53:56,090 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3877, Rel MRR (filter): 0.4406
+2026-01-25 07:53:56,091 - hyperbolic_main - INFO - Validation - MRR: raw=0.3959, filter=0.4096
+2026-01-25 07:53:56,091 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3877, filter=0.4406
+2026-01-25 07:54:58,051 - hyperbolic_main - INFO - Epoch 0034 | Loss: 2.2107 | E/R/S: 2.1922/2.2539/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:54:58,051 - hyperbolic_main - INFO - Running validation at epoch 34...
+2026-01-25 07:55:02,659 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3955, MRR (filter): 0.4091
+2026-01-25 07:55:02,659 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3875, Rel MRR (filter): 0.4398
+2026-01-25 07:55:02,660 - hyperbolic_main - INFO - Validation - MRR: raw=0.3955, filter=0.4091
+2026-01-25 07:55:02,660 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3875, filter=0.4398
+2026-01-25 07:56:04,725 - hyperbolic_main - INFO - Epoch 0035 | Loss: 2.1800 | E/R/S: 2.1560/2.2359/0.0000 | Best MRR: 0.4119 | Time: 62.1s
+2026-01-25 07:56:04,725 - hyperbolic_main - INFO - Running validation at epoch 35...
+2026-01-25 07:56:09,333 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3938, MRR (filter): 0.4071
+2026-01-25 07:56:09,333 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3839, Rel MRR (filter): 0.4369
+2026-01-25 07:56:09,333 - hyperbolic_main - INFO - Validation - MRR: raw=0.3938, filter=0.4071
+2026-01-25 07:56:09,333 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3839, filter=0.4369
+2026-01-25 07:57:11,299 - hyperbolic_main - INFO - Epoch 0036 | Loss: 2.1534 | E/R/S: 2.1271/2.2146/0.0000 | Best MRR: 0.4119 | Time: 62.0s
+2026-01-25 07:57:11,299 - hyperbolic_main - INFO - Running validation at epoch 36...
+2026-01-25 07:57:15,906 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3911, MRR (filter): 0.4045
+2026-01-25 07:57:15,906 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3858, Rel MRR (filter): 0.4370
+2026-01-25 07:57:15,906 - hyperbolic_main - INFO - Validation - MRR: raw=0.3911, filter=0.4045
+2026-01-25 07:57:15,907 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3858, filter=0.4370
+2026-01-25 07:58:18,267 - hyperbolic_main - INFO - Epoch 0037 | Loss: 2.1275 | E/R/S: 2.0971/2.1987/0.0000 | Best MRR: 0.4119 | Time: 62.4s
+2026-01-25 07:58:18,267 - hyperbolic_main - INFO - Running validation at epoch 37...
+2026-01-25 07:58:22,870 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3964, MRR (filter): 0.4100
+2026-01-25 07:58:22,870 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3843, Rel MRR (filter): 0.4366
+2026-01-25 07:58:22,870 - hyperbolic_main - INFO - Validation - MRR: raw=0.3964, filter=0.4100
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - Validation - Rel MRR: raw=0.3843, filter=0.4366
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - Early stopping at epoch 37: no improvement in 20 epochs.
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - Training completed in 42.6 minutes
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - ========================================
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - Final Evaluation on Test Set
+2026-01-25 07:58:22,871 - hyperbolic_main - INFO - ========================================
+2026-01-25 07:58:27,110 - hyperbolic_main - INFO - Test Results - MRR (raw): 0.3950, MRR (filter): 0.4037
+2026-01-25 07:58:27,110 - hyperbolic_main - INFO - Test Results - Rel MRR (raw): 0.3950, Rel MRR (filter): 0.4448
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - ========================================
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - Final Test Results
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - ========================================
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - Entity Prediction - MRR: raw=0.3950, filter=0.4037
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - Relation Prediction - MRR: raw=0.3950, filter=0.4448
+2026-01-25 07:58:27,111 - hyperbolic_main - INFO - Best epoch: 17, Best MRR: 0.4119
