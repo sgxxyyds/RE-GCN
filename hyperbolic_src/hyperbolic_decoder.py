@@ -85,7 +85,8 @@ class HyperbolicConvTransE(nn.Module):
         """
         # Map entity embeddings to tangent space
         entity_tangent = HyperbolicOps.log_map_zero(entity_embedding, self.c)
-        entity_tangent = torch.tanh(entity_tangent)  # Non-linearity for stability
+        # IMPROVED: Use leaky tanh (scale + shift) for better gradient flow
+        entity_tangent = 0.9 * torch.tanh(entity_tangent) + 0.1 * entity_tangent
         
         batch_size = len(triplets)
         
@@ -114,10 +115,12 @@ class HyperbolicConvTransE(nn.Module):
         
         x = F.relu(x)
         
-        # Score against all entities
-        x = torch.mm(x, entity_tangent.transpose(1, 0))
+        # Score against all entities (IMPROVED: add scaling for stability)
+        scores = torch.mm(x, entity_tangent.transpose(1, 0))
+        # Add bias term for better calibration
+        scores = scores + self.b
         
-        return x
+        return scores
 
 
 class HyperbolicConvTransR(nn.Module):
@@ -183,7 +186,8 @@ class HyperbolicConvTransR(nn.Module):
         """
         # Map entity embeddings to tangent space
         entity_tangent = HyperbolicOps.log_map_zero(entity_embedding, self.c)
-        entity_tangent = torch.tanh(entity_tangent)
+        # IMPROVED: Use leaky tanh for better gradient flow
+        entity_tangent = 0.9 * torch.tanh(entity_tangent) + 0.1 * entity_tangent
         
         batch_size = len(triplets)
         
@@ -209,10 +213,11 @@ class HyperbolicConvTransR(nn.Module):
         x = self.bn2(x)
         x = F.relu(x)
         
-        # Score against all relations
-        x = torch.mm(x, rel_embedding.transpose(1, 0))
+        # Score against all relations (IMPROVED: add bias term)
+        scores = torch.mm(x, rel_embedding.transpose(1, 0))
+        scores = scores + self.b
         
-        return x
+        return scores
 
 
 class HyperbolicDistMult(nn.Module):
