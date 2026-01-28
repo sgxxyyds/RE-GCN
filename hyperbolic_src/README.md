@@ -7,10 +7,11 @@ This module implements a **Hyperbolic Space-based Temporal Knowledge Graph Compl
 Based on the technical solution document (`hyperbolic_temporal_re_gcn_技术方案.md`), this implementation features:
 
 1. **Hyperbolic Entity Embeddings** - Using the Poincaré Ball model where the radius represents semantic abstraction level
-2. **Temporal Radius Evolution** - Learnable mechanism to adjust entity semantic levels across time
-3. **Hyperbolic RE-GCN** - Graph convolution operating in tangent space with hyperbolic mappings
-4. **Hyperbolic GRU** - Temporal smoothing using GRU operations in hyperbolic space
-5. **Euclidean Decoder** - Stable scoring in tangent space using ConvTransE/DistMult
+2. **Radius Semantic Grounding** - Static radius targets derived from graph statistics with supervision loss
+3. **Residual Temporal Radius Evolution** - Bounded radius perturbations on top of static semantics
+4. **Hyperbolic RE-GCN** - Graph convolution operating in tangent space with hyperbolic mappings
+5. **Hyperbolic GRU** - Temporal smoothing using GRU operations in hyperbolic space
+6. **Euclidean Decoder** - Stable scoring in tangent space using ConvTransE/DistMult
 
 ## Architecture
 
@@ -54,19 +55,27 @@ hyperbolic_src/
 - `hyperbolic_distance(x, y)`: Compute hyperbolic distance
 - `project_to_ball(x)`: Project points inside the Poincaré ball
 
-### Temporal Radius Evolution
+### Radius Semantic Grounding
 
-Adjusts entity embeddings' radii based on temporal evolution:
-```python
-h_e^(t-1 -> t) = log_0(W_Δt ⊗_c exp_0(h_e^(t-1)))
+Static semantic radii are derived from graph degree and frequency statistics,
+then constrained with an MSE loss:
 ```
-Where W_Δt is a learnable diagonal matrix.
+L = L_KG + λ * ||r_static - r_target||^2
+```
+
+### Residual Temporal Radius Evolution
+
+Time evolution only introduces bounded perturbations:
+```
+Δr(t) = clip(g(h(t)), -ε, +ε)
+r(t) = r_static + Δr(t)
+```
 
 ### Hyperbolic RE-GCN
 
 Performs RGCN aggregation in tangent space:
 1. Map nodes to tangent space: `log_0(h)`
-2. Apply RGCN aggregation
+2. Apply RGCN aggregation (radius-aware message weights)
 3. Map back to hyperbolic space: `exp_0(h')`
 
 ### Hyperbolic GRU
@@ -101,12 +110,18 @@ python hyperbolic_main.py -d ICEWS14s \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `--curvature` | Curvature of hyperbolic space | 0.01 |
-| `--hyperbolic-lr-ratio` | Learning rate ratio for hyperbolic params | 0.1 |
 | `--n-hidden` | Hidden dimension | 200 |
 | `--n-layers` | Number of GCN layers | 2 |
 | `--train-history-len` | Training history length | 10 |
 | `--encoder` | Encoder type | hyperbolic_uvrgcn |
 | `--decoder` | Decoder type | hyperbolic_convtranse |
+| `--radius-alpha` | Degree weight for radius target | 0.5 |
+| `--radius-beta` | Frequency weight for radius target | 0.5 |
+| `--radius-min` | Minimum static radius | 0.5 |
+| `--radius-max` | Maximum static radius | 3.0 |
+| `--radius-lambda` | Radius supervision loss weight | 0.02 |
+| `--radius-epsilon` | Max temporal radius perturbation | 0.1 |
+| `--disable-residual` | Disable residual temporal radius evolution | False |
 
 ## Mathematical Foundation
 

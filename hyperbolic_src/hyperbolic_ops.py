@@ -192,6 +192,31 @@ class HyperbolicOps:
             Radius of each point, shape (...)
         """
         return torch.norm(x, p=2, dim=-1).clamp(min=eps)
+
+    @staticmethod
+    def apply_radius(x, radius, c=0.01, eps=1e-6):
+        """
+        Apply a target radius to hyperbolic points while preserving direction.
+
+        Args:
+            x: Points on the Poincaré ball, shape (..., d)
+            radius: Target radius, shape (...) or (..., 1)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Points with adjusted radius inside the Poincaré ball.
+        """
+        if radius is None:
+            return x
+        radius_tensor = radius
+        if radius_tensor.dim() == x.dim() - 1:
+            radius_tensor = radius_tensor.unsqueeze(-1)
+        max_radius = 1.0 / math.sqrt(c) - eps
+        radius_tensor = radius_tensor.clamp(min=eps, max=max_radius)
+        norm = torch.norm(x, p=2, dim=-1, keepdim=True).clamp(min=eps)
+        direction = x / norm
+        return direction * radius_tensor
     
     @staticmethod
     def log_embedding_stats(x, name="embeddings", c=0.01):
@@ -318,116 +343,62 @@ class HyperbolicLayer(nn.Module):
 
 class TemporalRadiusEvolution(nn.Module):
     """
-    Temporal Radius Evolution Module with Residual Connection.
-    
-    This module adjusts entity embeddings based on temporal evolution,
-    using a learnable diagonal matrix to scale the radius (semantic level)
-    of entity representations across time steps.
-    
-    IMPROVED (v3): 
-    - Better initialization for residual gate (start at 0.5, not 0)
-    - Added layer normalization for stability
-    - Improved attention mechanism with proper scaling
-    - Added gradient scaling to prevent explosion
-    
-    h_e^(t-1 -> t) = log_0(W_Δt ⊗_c exp_0(h_e^(t-1)))
-    
-    Where W_Δt is a learnable diagonal matrix.
+    Temporal Radius Evolution Module with Residual Radius Perturbation.
+
+    This module computes a small residual perturbation for the radius
+    while keeping the static semantic radius dominant:
+
+    Δr(t) = clip(g(h(t)), -ε, +ε)
+    r(t) = r_static + Δr(t)
     """
-    
-    def __init__(self, dim, c=0.01, use_residual=True, use_attention=False):
+
+    def __init__(self, dim, c=0.01, epsilon=0.1):
         """
         Args:
             dim: Embedding dimension
             c: Curvature parameter
-            use_residual: Whether to use residual connection (default True)
-            use_attention: Whether to use attention-based evolution (default False)
+            epsilon: Maximum perturbation magnitude
         """
         super(TemporalRadiusEvolution, self).__init__()
         self.dim = dim
         self.c = c
-        self.use_residual = use_residual
-        self.use_attention = use_attention
-        
-        # Learnable diagonal scaling matrix (initialized to 1.0 with small std)
-        self.scale = nn.Parameter(torch.ones(dim))
-        
-        # Layer normalization for stability
-        self.layer_norm = nn.LayerNorm(dim)
-        
-        # Residual gate: controls how much to evolve vs keep original
-        # IMPROVED: Initialize at logit(0.5) = 0, but use a learned bias starting at 0.5
-        # This ensures the gate starts at ~0.5 instead of ~0
-        if use_residual:
-            # Initialize to give sigmoid output ~0.3-0.5 (moderate evolution)
-            self.residual_gate = nn.Parameter(torch.tensor([0.0]))
-            # Learnable offset to control evolution strength
-            self.evolution_bias = nn.Parameter(torch.tensor([0.5]))
-        
-        # Attention-based temporal evolution
-        if use_attention:
-            self.attention_weight = nn.Parameter(torch.Tensor(dim, dim))
-            nn.init.xavier_uniform_(self.attention_weight, gain=0.1)  # Smaller initialization
-            self.attention_bias = nn.Parameter(torch.zeros(dim))
-        
-        # For logging
+        self.epsilon = epsilon
+        self.radius_mlp = nn.Linear(dim, 1)
+        nn.init.xavier_uniform_(self.radius_mlp.weight, gain=0.1)
+        nn.init.zeros_(self.radius_mlp.bias)
         self.last_evolution_stats = None
-    
-    def forward(self, x):
+
+    def forward(self, x, static_radius):
         """
-        Apply temporal radius evolution with optional residual connection.
-        
+        Apply residual radius evolution.
+
         Args:
             x: Entity embeddings in hyperbolic space, shape (..., dim)
-            
+            static_radius: Static radius tensor, shape (...,)
+
         Returns:
             Evolved embeddings in hyperbolic space
         """
-        # Map to tangent space
         tangent = HyperbolicOps.log_map_zero(x, self.c)
-        
-        # Apply layer normalization for stability
-        tangent_normed = self.layer_norm(tangent)
-        
-        # Apply diagonal scaling (radius adjustment)
-        if self.use_attention:
-            # Attention-based scaling: compute attention score per dimension
-            # Use smaller scale factor for stability
-            attn_scores = torch.sigmoid(F.linear(tangent_normed, self.attention_weight, self.attention_bias))
-            # Scale should be close to 1 with small variations
-            effective_scale = 0.9 + 0.2 * torch.sigmoid(self.scale)  # Range [0.9, 1.1]
-            scaled = tangent * effective_scale * attn_scores
+        delta = self.radius_mlp(tangent).squeeze(-1)
+        delta_clipped = torch.clamp(delta, min=-self.epsilon, max=self.epsilon)
+        if static_radius is None:
+            base_radius = HyperbolicOps.get_radius(x)
         else:
-            # Scale should be close to 1 with small variations
-            effective_scale = 0.9 + 0.2 * torch.sigmoid(self.scale)  # Range [0.9, 1.1]
-            scaled = tangent * effective_scale
-        
-        # Map back to hyperbolic space
-        evolved = HyperbolicOps.exp_map_zero(scaled, self.c)
-        
-        # Apply residual connection in hyperbolic space via Möbius addition
-        if self.use_residual:
-            # IMPROVED: Gate value between 0 and 1, starting around 0.5
-            gate = torch.sigmoid(self.residual_gate + self.evolution_bias)
-            # Blend in tangent space for stability
-            evolved_tangent = HyperbolicOps.log_map_zero(evolved, self.c)
-            blended_tangent = gate * evolved_tangent + (1 - gate) * tangent
-            evolved = HyperbolicOps.exp_map_zero(blended_tangent, self.c)
-            
-            # Log statistics
-            self.last_evolution_stats = {
-                "gate_value": gate.item(),
-                "scale_mean": effective_scale.mean().item(),
-                "scale_std": effective_scale.std().item(),
-            }
-        else:
-            # effective_scale is always computed before this point
-            self.last_evolution_stats = {
-                "scale_mean": effective_scale.mean().item(),
-            }
-        
+            base_radius = static_radius
+        if base_radius.dim() == x.dim() - 1:
+            base_radius = base_radius.unsqueeze(-1)
+        if delta_clipped.dim() == x.dim() - 1:
+            delta_clipped = delta_clipped.unsqueeze(-1)
+        new_radius = base_radius + delta_clipped
+        evolved = HyperbolicOps.apply_radius(x, new_radius, self.c)
+        self.last_evolution_stats = {
+            "delta_mean": delta_clipped.mean().item(),
+            "delta_std": delta_clipped.std().item(),
+            "epsilon": self.epsilon,
+        }
         return evolved
-    
+
     def get_evolution_stats(self):
         """Get statistics about the last evolution step."""
         return self.last_evolution_stats

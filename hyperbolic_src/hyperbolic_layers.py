@@ -93,6 +93,9 @@ class HyperbolicRGCNLayer(nn.Module):
         
         # Apply relation-specific transformation
         msg = torch.bmm(node, weight).view(-1, self.out_feat)
+        radius_diff = torch.abs(edges.src['radius'] - edges.dst['radius'])
+        radius_weight = torch.exp(-radius_diff).squeeze(-1)
+        msg = msg * radius_weight.unsqueeze(-1)
         
         return {'msg': msg}
     
@@ -120,11 +123,13 @@ class HyperbolicRGCNLayer(nn.Module):
         
         # Store tangent features in graph
         g.ndata['h_tangent'] = h_tangent
+        g.ndata['radius'] = HyperbolicOps.get_radius(h_hyper).unsqueeze(-1)
         
         # Step 2: Message passing in tangent space
         g.update_all(self.msg_func, fn.sum(msg='msg', out='h_tangent'), self.apply_func)
         
         h_new = g.ndata.pop('h_tangent')
+        g.ndata.pop('radius')
         
         # Self-loop in tangent space
         if self.self_loop:
@@ -214,6 +219,9 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         msg = node + relation
         # Use F.linear for proper matrix multiplication (handles 2D tensors correctly)
         msg = F.linear(msg, self.weight_neighbor.t())
+        radius_diff = torch.abs(edges.src['radius'] - edges.dst['radius'])
+        radius_weight = torch.exp(-radius_diff).squeeze(-1)
+        msg = msg * radius_weight.unsqueeze(-1)
         
         return {'msg': msg}
     
@@ -249,6 +257,7 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         # Step 1: Map to tangent space
         h_tangent = HyperbolicOps.log_map_zero(h_hyper, self.c)
         g.ndata['h_tangent'] = h_tangent
+        g.ndata['radius'] = HyperbolicOps.get_radius(h_hyper).unsqueeze(-1)
         
         # Compute self-loop messages (RE-GCN style: different weights for nodes with/without edges)
         if self.self_loop:
@@ -271,6 +280,7 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         g.update_all(lambda x: self.msg_func(x), fn.sum(msg='msg', out='h_tangent'), self.apply_func)
         
         h_new = g.ndata.pop('h_tangent')
+        g.ndata.pop('radius')
         
         # IMPROVED: Gradient scaling - clamp large values to prevent explosion
         h_new = torch.clamp(h_new, min=-10.0, max=10.0)

@@ -160,6 +160,29 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
     return mrr_raw, mrr_filter, mrr_raw_r, mrr_filter_r
 
 
+def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
+                            radius_min=0.5, radius_max=3.0):
+    degrees = [set() for _ in range(num_nodes)]
+    freq = np.zeros(num_nodes, dtype=np.float64)
+    for snapshot in triple_snapshots:
+        if len(snapshot) == 0:
+            continue
+        src = snapshot[:, 0]
+        dst = snapshot[:, 2]
+        freq += np.bincount(src, minlength=num_nodes)
+        freq += np.bincount(dst, minlength=num_nodes)
+        for s, d in zip(src, dst):
+            degrees[s].add(d)
+            degrees[d].add(s)
+    degree_counts = np.array([len(neighbors) for neighbors in degrees], dtype=np.float64)
+    abstract_score = alpha * np.log1p(degree_counts) + beta * np.log1p(freq)
+    if abstract_score.max() - abstract_score.min() < 1e-9:
+        normed = np.full_like(abstract_score, 0.5)
+    else:
+        normed = (abstract_score - abstract_score.min()) / (abstract_score.max() - abstract_score.min())
+    return radius_min + (radius_max - radius_min) * normed
+
+
 def run_experiment(args):
     """
     Run the training/testing experiment with comprehensive logging.
@@ -242,6 +265,14 @@ def run_experiment(args):
     
     # Create model with new parameters
     logger.info("Creating Hyperbolic Recurrent RGCN model...")
+    radius_targets = _compute_radius_targets(
+        train_list, num_nodes, alpha=args.radius_alpha, beta=args.radius_beta,
+        radius_min=args.radius_min, radius_max=args.radius_max
+    )
+    logger.info(
+        f"Radius targets: min={radius_targets.min():.4f}, "
+        f"max={radius_targets.max():.4f}, mean={radius_targets.mean():.4f}"
+    )
     model = HyperbolicRecurrentRGCN(
         decoder_name=args.decoder,
         encoder_name=args.encoder,
@@ -273,7 +304,12 @@ def run_experiment(args):
         analysis=args.run_analysis,
         # New optimization parameters
         learn_curvature=args.learn_curvature,
-        use_residual_evolution=args.use_residual
+        use_residual_evolution=not args.disable_residual,
+        radius_target=radius_targets,
+        radius_lambda=args.radius_lambda,
+        radius_min=args.radius_min,
+        radius_max=args.radius_max,
+        radius_epsilon=args.radius_epsilon
     )
     
     # Log model parameter count
@@ -325,6 +361,7 @@ def run_experiment(args):
             losses_e = []
             losses_r = []
             losses_static = []
+            losses_radius = []
             
             # Shuffle training order
             idx = list(range(len(train_list)))
@@ -352,15 +389,18 @@ def run_experiment(args):
                     output = [o.cuda() for o in output]
                 
                 # Compute loss
-                loss_e, loss_r, loss_static = model.get_loss(
+                loss_e, loss_r, loss_static, loss_radius = model.get_loss(
                     history_glist, output[0], static_graph, use_cuda
                 )
-                loss = args.task_weight * loss_e + (1 - args.task_weight) * loss_r + loss_static
+                loss = args.task_weight * loss_e + (1 - args.task_weight) * loss_r + loss_static + loss_radius
                 
                 losses.append(loss.item())
                 losses_e.append(loss_e.item())
                 losses_r.append(loss_r.item())
                 losses_static.append(loss_static.item())
+                losses_radius.append(loss_radius.item())
+                if args.run_analysis:
+                    logger.debug(f"Radius loss: {loss_radius.item():.4f}")
                 
                 # Backprop
                 loss.backward()
@@ -379,7 +419,8 @@ def run_experiment(args):
             # Log epoch summary
             epoch_summary = (f"Epoch {epoch:04d} | "
                            f"Loss: {np.mean(losses):.4f} | "
-                           f"E/R/S: {np.mean(losses_e):.4f}/{np.mean(losses_r):.4f}/{np.mean(losses_static):.4f} | "
+                           f"E/R/S/Rad: {np.mean(losses_e):.4f}/{np.mean(losses_r):.4f}/"
+                           f"{np.mean(losses_static):.4f}/{np.mean(losses_radius):.4f} | "
                            f"Best MRR: {best_mrr:.4f} | "
                            f"Time: {epoch_time:.1f}s")
             logger.info(epoch_summary)
@@ -456,7 +497,13 @@ if __name__ == '__main__':
     # Hyperbolic space settings
     parser.add_argument("--curvature", type=float, default=0.01, help="Curvature of hyperbolic space")
     parser.add_argument("--learn-curvature", action='store_true', default=False, help="Learn curvature during training (NEW)")
-    parser.add_argument("--use-residual", action='store_true', default=True, help="Use residual connection in temporal evolution (NEW)")
+    parser.add_argument("--disable-residual", action='store_true', default=False, help="Disable residual temporal radius evolution")
+    parser.add_argument("--radius-alpha", type=float, default=0.5, help="Weight for degree-based radius target")
+    parser.add_argument("--radius-beta", type=float, default=0.5, help="Weight for frequency-based radius target")
+    parser.add_argument("--radius-min", type=float, default=0.5, help="Minimum static radius")
+    parser.add_argument("--radius-max", type=float, default=3.0, help="Maximum static radius")
+    parser.add_argument("--radius-lambda", type=float, default=0.02, help="Radius supervision loss weight")
+    parser.add_argument("--radius-epsilon", type=float, default=0.1, help="Max temporal radius perturbation")
     
     # Encoder settings
     parser.add_argument("--weight", type=float, default=1, help="Weight of static constraint")
