@@ -235,11 +235,12 @@ def run_experiment(args):
     )
     
     # Model name for checkpointing (updated to include new parameters)
+    use_residual = not args.disable_residual
     model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-gpu{}".format(
         args.dataset, args.encoder, args.decoder, args.n_layers,
         args.curvature, args.train_history_len, args.weight, args.angle,
         args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout,
-        int(args.use_residual), int(args.learn_curvature),
+        int(use_residual), int(args.learn_curvature),
         args.gpu
     )
     model_state_file = '../models/' + model_name
@@ -304,7 +305,7 @@ def run_experiment(args):
         analysis=args.run_analysis,
         # New optimization parameters
         learn_curvature=args.learn_curvature,
-        use_residual_evolution=not args.disable_residual,
+        use_residual_evolution=use_residual,
         radius_target=radius_targets,
         radius_lambda=args.radius_lambda,
         radius_min=args.radius_min,
