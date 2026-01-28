@@ -32,16 +32,16 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 - 半径表示语义抽象层级（半径越大 = 概念越具体）
 - 曲率参数 `c = 0.01`（为稳定性固定）
 
-### 2. 时间半径演化
-- 可学习机制，用于跨时间调整实体语义层级
-- 建模实体随时间从抽象到具体（或相反）的演化
-- 公式：`h_e^(t+1) = exp_0(W_Δt · log_0(h_e^(t)))`
+### 2. 半径语义显式化
+- 使用结构统计构造静态半径目标
+- 通过半径监督损失约束语义层级
+- 时间演化仅作残差扰动（`Δr` 有界）
 
 ### 3. 双曲 RE-GCN
 - 图卷积在 **切空间** 中进行以保证数值稳定
 - 流程：
   1. 将节点映射到切空间：`log_0(h)`
-  2. 应用 RGCN 聚合
+  2. 应用 RGCN 聚合（半径差加权）
   3. 映射回双曲空间：`exp_0(h')`
 
 ### 4. 双曲 GRU
@@ -141,8 +141,14 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--test-history-len` | 测试历史长度 | 20 |
 | `--encoder` | 编码器类型 | hyperbolic_uvrgcn |
 | `--decoder` | 解码器类型 | hyperbolic_convtranse |
-| `--use-residual` | 使用残差连接进行时间演化（新） | True |
+| `--disable-residual` | 关闭时间半径残差演化 | False |
 | `--learn-curvature` | 训练时学习曲率参数（新） | False |
+| `--radius-alpha` | 半径目标度数权重 | 0.5 |
+| `--radius-beta` | 半径目标频次权重 | 0.5 |
+| `--radius-min` | 静态半径最小值 | 0.5 |
+| `--radius-max` | 静态半径最大值 | 3.0 |
+| `--radius-lambda` | 半径监督损失权重 | 0.02 |
+| `--radius-epsilon` | 时间半径扰动上限 | 0.1 |
 | `--verbose` | 启用详细调试日志（新） | False |
 | `--log-file` | 将日志保存到文件（新） | False |
 | `--run-analysis` | 运行分析模式，记录详细统计信息（新） | False |

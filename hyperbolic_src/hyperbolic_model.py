@@ -155,7 +155,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  weight=1, discount=0, angle=0, use_static=False,
                  entity_prediction=False, relation_prediction=False,
                  use_cuda=False, gpu=0, analysis=False,
-                 learn_curvature=False, use_residual_evolution=True):
+                 learn_curvature=False, use_residual_evolution=True,
+                 radius_target=None, radius_lambda=0.02,
+                 radius_min=0.5, radius_max=3.0, radius_epsilon=0.1):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse")
@@ -188,6 +190,11 @@ class HyperbolicRecurrentRGCN(nn.Module):
             analysis: Whether to run analysis
             learn_curvature: Whether to learn curvature (NEW)
             use_residual_evolution: Use residual connection in temporal evolution (NEW)
+            radius_target: Target radius for entities, shape (num_ents,)
+            radius_lambda: Weight for radius supervision loss
+            radius_min: Minimum radius for static radius projection
+            radius_max: Maximum radius for static radius projection
+            radius_epsilon: Max temporal radius perturbation magnitude
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -212,6 +219,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.gpu = gpu
         self.learn_curvature = learn_curvature
         self.use_residual_evolution = use_residual_evolution
+        self.radius_lambda = radius_lambda
+        self.radius_min = radius_min
+        self.radius_max = radius_max
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
@@ -243,11 +253,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
         nn.init.xavier_normal_(self.emb_rel)
         
         # ============ Temporal Radius Evolution (IMPROVED v3) ============
-        # Enable attention for better temporal modeling
         self.temporal_radius_evolution = TemporalRadiusEvolution(
-            h_dim, c=c, 
-            use_residual=use_residual_evolution,
-            use_attention=True  # Enable attention for better temporal evolution
+            h_dim, c=c, epsilon=radius_epsilon
         )
         
         # ============ Transformation Weights ============
@@ -314,6 +321,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
         logger.info(f"  - Hidden dim: {h_dim}, Layers: {num_hidden_layers}")
         logger.info(f"  - Curvature: {c}, Learnable: {learn_curvature}")
         logger.info(f"  - Use residual evolution: {use_residual_evolution}")
+
+        if radius_target is None:
+            target = torch.full((num_ents,), 0.5 * (radius_min + radius_max))
+        else:
+            target = torch.as_tensor(radius_target, dtype=torch.float)
+        self.register_buffer("radius_target", target)
+        self.radius_static = nn.Parameter(self.radius_target.clone())
     
     def get_curvature(self):
         """Get the current curvature value."""
@@ -329,6 +343,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
         """
         c = self.get_curvature()
         return HyperbolicOps.exp_map_zero(self.dynamic_emb, c)
+
+    def _static_radius(self):
+        radius = torch.clamp(self.radius_static, min=self.radius_min, max=self.radius_max)
+        curvature = self.get_curvature()
+        curvature_val = curvature.detach().item() if isinstance(curvature, torch.Tensor) else curvature
+        max_radius = 1.0 / math.sqrt(curvature_val)
+        return torch.clamp(radius, max=max_radius - 1e-6)
     
     def forward(self, g_list, static_graph, use_cuda):
         """
@@ -385,6 +406,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
             init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
             self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
             static_emb = None
+        self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c_val)
         
         # Log initial embedding statistics
         if self.run_analysis and self.training:
@@ -457,17 +479,22 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Map back to hyperbolic space
             self.h = HyperbolicOps.exp_map_zero(new_tangent, c_val)
             self.h = HyperbolicOps.project_to_ball(self.h, c_val)
+            self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c_val)
             
             # ============ Temporal Radius Evolution (Hyperbolic Innovation) ============
             # Optional: Adjust semantic level based on time (hyperbolic-specific)
             # This is the key innovation of the hyperbolic model
-            self.h = self.temporal_radius_evolution(self.h)
+            if self.use_residual_evolution:
+                self.h = self.temporal_radius_evolution(self.h, self._static_radius())
             
             # Log evolution statistics
             if self.run_analysis and self.use_residual_evolution:
                 evolution_stats = self.temporal_radius_evolution.get_evolution_stats()
                 if evolution_stats:
-                    logger.debug(f"Time step {i}: evolution gate={evolution_stats.get('gate_value', 'N/A'):.4f}")
+                    logger.debug(
+                        f"Time step {i}: radius_delta_mean={evolution_stats.get('delta_mean', 0.0):.4f}, "
+                        f"radius_delta_std={evolution_stats.get('delta_std', 0.0):.4f}"
+                    )
             
             history_embs.append(self.h)
         
@@ -540,6 +567,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
             loss_ent: Entity prediction loss
             loss_rel: Relation prediction loss
             loss_static: Static constraint loss
+            loss_radius: Radius supervision loss
         """
         # Get current curvature
         c = self.get_curvature()
@@ -551,6 +579,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         loss_ent = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         loss_rel = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         loss_static = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        loss_radius = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
         
         # Create inverse triplets
         inverse_triples = triples[:, [2, 1, 0]]
@@ -605,17 +634,30 @@ class HyperbolicRecurrentRGCN(nn.Module):
                         sim_matrix = sim_matrix / norm_product
                     mask = (math.cos(step) - sim_matrix) > 0
                     loss_static += self.weight * torch.sum(torch.masked_select(math.cos(step) - sim_matrix, mask))
-        
+
+        # Radius supervision loss (static semantic grounding)
+        radius_target = self.radius_target
+        if use_cuda:
+            radius_target = radius_target.to(self.gpu)
+        entity_ids = torch.unique(all_triples[:, [0, 2]].reshape(-1))
+        radius_static = self._static_radius().index_select(0, entity_ids)
+        radius_target = radius_target.index_select(0, entity_ids)
+        loss_radius = self.radius_lambda * F.mse_loss(radius_static, radius_target)
+
         # Log loss components for debugging
         if self.run_analysis:
             self.training_stats["loss_components"].append({
                 "loss_ent": loss_ent.item(),
                 "loss_rel": loss_rel.item(),
                 "loss_static": loss_static.item(),
+                "loss_radius": loss_radius.item(),
             })
-            logger.debug(f"Loss components: ent={loss_ent.item():.4f}, rel={loss_rel.item():.4f}, static={loss_static.item():.4f}")
+            logger.debug(
+                f"Loss components: ent={loss_ent.item():.4f}, rel={loss_rel.item():.4f}, "
+                f"static={loss_static.item():.4f}, radius={loss_radius.item():.4f}"
+            )
         
-        return loss_ent, loss_rel, loss_static
+        return loss_ent, loss_rel, loss_static, loss_radius
     
     def log_gradient_stats(self):
         """Log gradient statistics for all model parameters."""
@@ -643,11 +685,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
             "curvature": self.get_curvature().item() if self.learn_curvature else self.get_curvature(),
         }
         
-        if self.use_residual_evolution:
-            evolution_stats = self.temporal_radius_evolution.get_evolution_stats()
-            if evolution_stats:
-                summary["evolution_gate"] = evolution_stats.get("gate_value", None)
-                summary["scale_mean"] = evolution_stats.get("scale_mean", None)
+        evolution_stats = self.temporal_radius_evolution.get_evolution_stats()
+        if evolution_stats:
+            summary["radius_delta_mean"] = evolution_stats.get("delta_mean", None)
+            summary["radius_delta_std"] = evolution_stats.get("delta_std", None)
         
         if self.training_stats["time_gate_values"]:
             summary["avg_time_gate"] = sum(self.training_stats["time_gate_values"]) / len(self.training_stats["time_gate_values"])
