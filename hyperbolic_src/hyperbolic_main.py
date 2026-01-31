@@ -183,8 +183,8 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
     return radius_min + (radius_max - radius_min) * normed
 
 
-def _clamp_curvature(value, min_value, max_value):
-    """Clamp curvature value to bounds and return a Python float."""
+def _clamp_value(value, min_value, max_value):
+    """Clamp a numeric value to bounds and return a Python float."""
     return min(max(value, min_value), max_value)
 
 
@@ -376,9 +376,8 @@ def run_experiment(args):
         early_stop_patience = 20
         training_start_time = time.time()
         
-        if args.learn_curvature:
-            initial_curvature = None
-            warmup_complete = False
+        initial_curvature = None
+        warmup_complete = False
 
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
@@ -395,7 +394,7 @@ def run_experiment(args):
             
             if args.learn_curvature:
                 if initial_curvature is None:
-                    initial_curvature = _clamp_curvature(
+                    initial_curvature = _clamp_value(
                         model.get_curvature().item(),
                         args.curvature_min,
                         args.curvature_max,
