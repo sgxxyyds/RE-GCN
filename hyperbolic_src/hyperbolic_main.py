@@ -205,11 +205,12 @@ def run_experiment(args):
     
     if args.curvature_warmup_epochs < 0:
         raise ValueError("curvature_warmup_epochs must be non-negative")
-    if args.curvature < args.curvature_min:
-        logger.warning("Curvature is below curvature_min; it will be clamped during training.")
-    if args.curvature > args.curvature_max:
-        logger.warning("Curvature is above curvature_max; it will be clamped during training.")
-    if not args.learn_curvature and args.curvature_warmup_epochs > 0:
+    if args.learn_curvature:
+        if args.curvature < args.curvature_min:
+            logger.warning("Curvature is below curvature_min; it will be clamped during training.")
+        if args.curvature > args.curvature_max:
+            logger.warning("Curvature is above curvature_max; it will be clamped during training.")
+    elif args.curvature_warmup_epochs > 0:
         logger.warning(
             "Curvature warmup is enabled without learn_curvature; "
             "warmup settings will be ignored."
@@ -387,6 +388,7 @@ def run_experiment(args):
             if args.learn_curvature:
                 if initial_curvature is None:
                     initial_curvature = model.get_curvature().item()
+                    initial_curvature = min(max(initial_curvature, args.curvature_min), args.curvature_max)
                 if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = initial_curvature + (args.curvature_max - initial_curvature) * warmup_progress
