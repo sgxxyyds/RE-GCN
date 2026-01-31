@@ -153,6 +153,7 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--curvature-max` | 曲率调度最大值 | 1e-1 |
 | `--curvature-warmup-epochs` | 曲率 warmup 轮数 | 0 |
 | `--verbose` | 启用详细调试日志（新） | False |
+| `--log-interval` | 每 N 个 epoch 输出训练摘要 | 1 |
 | `--log-file` | 将日志保存到文件（新） | False |
 | `--run-analysis` | 运行分析模式，记录详细统计信息（新） | False |
 
@@ -169,7 +170,7 @@ python hyperbolic_main.py -d ICEWS14s \
    - 时间门控值
    - 训练进度和指标
 
-使用 `--run-analysis --verbose --log-file` 启用完整的日志记录。
+使用 `--run-analysis --verbose --log-file --log-interval 1` 启用完整的日志记录。
 
 v2 版本后台训练示例：
 ```bash

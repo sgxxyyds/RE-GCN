@@ -17,7 +17,8 @@ class RGCNCell(BaseRGCN):
         act = F.rrelu
         if idx:
             self.num_basis = 0
-        print("activate function: {}".format(act))
+        if self.run_analysis:
+            print("activate function: {}".format(act))
         if self.skip_connect:
             sc = False if idx == 0 else True
         else:
@@ -40,7 +41,8 @@ class RGCNCell(BaseRGCN):
             return g.ndata.pop('h'), r
         else:
             if self.features is not None:
-                print("----------------Feature is not None, Attention ------------")
+                if self.run_analysis:
+                    print("----------------Feature is not None, Attention ------------")
                 g.ndata['id'] = self.features
             node_id = g.ndata['id'].squeeze()
             g.ndata['h'] = init_ent_emb[node_id]
@@ -58,7 +60,8 @@ class CandRGCN(BaseRGCN):
         act = F.rrelu
         if idx:
             self.num_basis = 0
-        print("activate function: {}".format(act))
+        if self.run_analysis:
+            print("activate function: {}".format(act))
         if self.skip_connect:
             sc = False if idx == 0 else True
         else:
@@ -81,7 +84,8 @@ class CandRGCN(BaseRGCN):
             return g.ndata.pop('h')
         else:
             if self.features is not None:
-                print("----------------Feature is not None, Attention ------------")
+                if self.run_analysis:
+                    print("----------------Feature is not None, Attention ------------")
                 g.ndata['id'] = self.features
             node_id = g.ndata['id'].squeeze()
             g.ndata['h'] = init_ent_emb[node_id]
@@ -445,7 +449,6 @@ class RecurrentRGCN(nn.Module):
         else:
             global_index = torch.Tensor(np.array(history_vocabulary.cpu(), dtype=float))
         return self.rdecoder_re2.forward(pre_emb, r_emb, all_triples, partial_embeding=global_index)
-
 
 
 

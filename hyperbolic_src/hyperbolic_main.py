@@ -88,8 +88,9 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
             checkpoint = torch.load(model_name, map_location=torch.device(args.gpu))
         else:
             checkpoint = torch.load(model_name, map_location=torch.device('cpu'))
-        print("Load Model: {}. Using best epoch: {}".format(model_name, checkpoint['epoch']))
-        print("\n" + "-" * 10 + "start testing" + "-" * 10 + "\n")
+        if args.verbose:
+            print("Load Model: {}. Using best epoch: {}".format(model_name, checkpoint['epoch']))
+            print("\n" + "-" * 10 + "start testing" + "-" * 10 + "\n")
         model.load_state_dict(checkpoint['state_dict'])
     
     model.eval()
@@ -97,7 +98,7 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
     # Get history for testing
     input_list = [snap for snap in history_list[-args.test_history_len:]]
     
-    for time_idx, test_snap in enumerate(tqdm(test_list, disable=True)):
+    for time_idx, test_snap in enumerate(tqdm(test_list, disable=not args.verbose)):
         # Build history graphs
         history_glist = [build_sub_graph(num_nodes, num_rels, g, use_cuda, args.gpu) 
                         for g in input_list]
@@ -407,7 +408,7 @@ def run_experiment(args):
                     model.set_curvature_bounds(curvature_max=args.curvature_max)
                     warmup_complete = True
 
-            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}", disable=True):
+            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}", disable=not args.verbose):
                 if train_sample_num == 0:
                     continue
                 
@@ -463,8 +464,10 @@ def run_experiment(args):
                            f"{np.mean(losses_static):.4f}/{np.mean(losses_radius):.4f} | "
                            f"Best MRR: {best_mrr:.4f} | "
                            f"Time: {epoch_time:.1f}s")
-            logger.info(epoch_summary)
-            print(epoch_summary)
+            if epoch % args.log_interval == 0:
+                logger.info(epoch_summary)
+                if args.verbose:
+                    print(epoch_summary)
             
             # Log model-specific training summary
             if args.run_analysis:
@@ -584,6 +587,7 @@ if __name__ == '__main__':
     # Logging settings (NEW)
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
+    parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
     
     args = parser.parse_args()
     print(args)

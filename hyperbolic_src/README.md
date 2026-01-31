@@ -125,6 +125,7 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--curvature-min` | Minimum curvature for scheduling | 1e-4 |
 | `--curvature-max` | Maximum curvature for scheduling | 1e-1 |
 | `--curvature-warmup-epochs` | Warmup epochs for curvature schedule | 0 |
+| `--log-interval` | Log epoch summary every N epochs | 1 |
 
 ## Mathematical Foundation
 
