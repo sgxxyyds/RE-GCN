@@ -236,11 +236,11 @@ def run_experiment(args):
     
     # Model name for checkpointing (updated to include new parameters)
     use_residual = not args.disable_residual
-    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-gpu{}".format(
+    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-cmax{}-cw{}-gpu{}".format(
         args.dataset, args.encoder, args.decoder, args.n_layers,
         args.curvature, args.train_history_len, args.weight, args.angle,
         args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout,
-        int(use_residual), int(args.learn_curvature),
+        int(use_residual), int(args.learn_curvature), args.curvature_max, args.curvature_warmup_epochs,
         args.gpu
     )
     model_state_file = '../models/' + model_name
@@ -310,7 +310,9 @@ def run_experiment(args):
         radius_lambda=args.radius_lambda,
         radius_min=args.radius_min,
         radius_max=args.radius_max,
-        radius_epsilon=args.radius_epsilon
+        radius_epsilon=args.radius_epsilon,
+        curvature_min=args.curvature_min,
+        curvature_max=args.curvature_max
     )
     
     # Log model parameter count
@@ -368,6 +370,14 @@ def run_experiment(args):
             idx = list(range(len(train_list)))
             random.shuffle(idx)
             
+            if args.learn_curvature:
+                if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
+                    warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
+                    current_max = args.curvature + (args.curvature_max - args.curvature) * warmup_progress
+                    model.set_curvature_bounds(curvature_max=current_max)
+                else:
+                    model.set_curvature_bounds(curvature_max=args.curvature_max)
+
             for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}"):
                 if train_sample_num == 0:
                     continue
@@ -498,6 +508,9 @@ if __name__ == '__main__':
     # Hyperbolic space settings
     parser.add_argument("--curvature", type=float, default=0.01, help="Curvature of hyperbolic space")
     parser.add_argument("--learn-curvature", action='store_true', default=False, help="Learn curvature during training (NEW)")
+    parser.add_argument("--curvature-min", type=float, default=1e-4, help="Minimum curvature for scheduling")
+    parser.add_argument("--curvature-max", type=float, default=1e-1, help="Maximum curvature for scheduling")
+    parser.add_argument("--curvature-warmup-epochs", type=int, default=0, help="Warmup epochs for curvature scheduling")
     parser.add_argument("--disable-residual", action='store_true', default=False, help="Disable residual temporal radius evolution")
     parser.add_argument("--radius-alpha", type=float, default=0.5, help="Weight for degree-based radius target")
     parser.add_argument("--radius-beta", type=float, default=0.5, help="Weight for frequency-based radius target")

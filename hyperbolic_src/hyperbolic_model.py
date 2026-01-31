@@ -157,7 +157,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  use_cuda=False, gpu=0, analysis=False,
                  learn_curvature=False, use_residual_evolution=True,
                  radius_target=None, radius_lambda=0.02,
-                 radius_min=0.5, radius_max=3.0, radius_epsilon=0.1):
+                 radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
+                 curvature_min=1e-4, curvature_max=1e-1):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse")
@@ -195,6 +196,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             radius_min: Minimum radius for static radius projection
             radius_max: Maximum radius for static radius projection
             radius_epsilon: Max temporal radius perturbation magnitude
+            curvature_min: Minimum curvature value
+            curvature_max: Maximum curvature value
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -222,12 +225,15 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.radius_lambda = radius_lambda
         self.radius_min = radius_min
         self.radius_max = radius_max
+        self.curvature_min = curvature_min
+        self.curvature_max = curvature_max
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
         if learn_curvature:
-            # Log-parameterization for stability (c = exp(log_c))
-            self.log_c = nn.Parameter(torch.tensor(math.log(c)))
+            # Log-parameterization with bounds (c = exp(log_c))
+            clamped_c = float(min(max(c, curvature_min), curvature_max))
+            self.log_c = nn.Parameter(torch.tensor(math.log(clamped_c)))
             logger.info(f"Using learnable curvature, initialized at c={c}")
         else:
             self.register_buffer('c', torch.tensor(c))
@@ -332,9 +338,17 @@ class HyperbolicRecurrentRGCN(nn.Module):
     def get_curvature(self):
         """Get the current curvature value."""
         if self.learn_curvature:
-            return torch.exp(self.log_c)
+            curvature = torch.exp(self.log_c)
+            return torch.clamp(curvature, min=self.curvature_min, max=self.curvature_max)
         else:
             return self.c
+
+    def set_curvature_bounds(self, curvature_min=None, curvature_max=None):
+        """Update curvature bounds for learnable curvature."""
+        if curvature_min is not None:
+            self.curvature_min = curvature_min
+        if curvature_max is not None:
+            self.curvature_max = curvature_max
     
     def _init_hyperbolic_embeddings(self):
         """

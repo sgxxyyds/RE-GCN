@@ -122,6 +122,9 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--radius-lambda` | Radius supervision loss weight | 0.02 |
 | `--radius-epsilon` | Max temporal radius perturbation | 0.1 |
 | `--disable-residual` | Disable residual temporal radius evolution | False |
+| `--curvature-min` | Minimum curvature for scheduling | 1e-4 |
+| `--curvature-max` | Maximum curvature for scheduling | 1e-1 |
+| `--curvature-warmup-epochs` | Warmup epochs for curvature schedule | 0 |
 
 ## Mathematical Foundation
 
@@ -132,7 +135,7 @@ The Poincaré ball is defined as:
 D_c^d = {x ∈ R^d : c||x||^2 < 1}
 ```
 
-With curvature `c = 0.01` (fixed for stability).
+With curvature `c = 0.01` (fixed for stability unless `--learn-curvature` is enabled).
 
 ### Exponential Map at Origin
 

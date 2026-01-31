@@ -26,6 +26,12 @@ class HyperbolicOps:
     """
     
     EPS = 1e-6  # Small epsilon for numerical stability
+
+    @staticmethod
+    def _sqrt_curvature(c):
+        if torch.is_tensor(c):
+            return torch.sqrt(c)
+        return math.sqrt(c)
     
     @staticmethod
     def clamp_norm(x, max_norm, eps=1e-6):
@@ -58,7 +64,7 @@ class HyperbolicOps:
         Returns:
             Projected tensor inside the ball
         """
-        max_norm = 1.0 / math.sqrt(c) - eps
+        max_norm = 1.0 / HyperbolicOps._sqrt_curvature(c) - eps
         return HyperbolicOps.clamp_norm(x, max_norm, eps)
     
     @staticmethod
@@ -76,7 +82,7 @@ class HyperbolicOps:
         Returns:
             Point on the Poincaré ball
         """
-        sqrt_c = math.sqrt(c)
+        sqrt_c = HyperbolicOps._sqrt_curvature(c)
         v_norm = torch.norm(v, p=2, dim=-1, keepdim=True).clamp(min=eps)
         v_normalized = v / v_norm
         result = torch.tanh(sqrt_c * v_norm) * v_normalized / sqrt_c
@@ -97,7 +103,7 @@ class HyperbolicOps:
         Returns:
             Tangent vector at origin
         """
-        sqrt_c = math.sqrt(c)
+        sqrt_c = HyperbolicOps._sqrt_curvature(c)
         x_norm = torch.norm(x, p=2, dim=-1, keepdim=True).clamp(min=eps)
         # Clamp for numerical stability of arctanh
         scaled_norm = (sqrt_c * x_norm).clamp(max=1.0 - eps)
@@ -169,7 +175,7 @@ class HyperbolicOps:
         Returns:
             Hyperbolic distance, shape (...)
         """
-        sqrt_c = math.sqrt(c)
+        sqrt_c = HyperbolicOps._sqrt_curvature(c)
         # Compute -x ⊕ y
         neg_x = -x
         diff = HyperbolicOps.mobius_add(neg_x, y, c, eps)
@@ -212,7 +218,7 @@ class HyperbolicOps:
         radius_tensor = radius
         if radius_tensor.dim() == x.dim() - 1:
             radius_tensor = radius_tensor.unsqueeze(-1)
-        max_radius = 1.0 / math.sqrt(c) - eps
+        max_radius = 1.0 / HyperbolicOps._sqrt_curvature(c) - eps
         radius_tensor = radius_tensor.clamp(min=eps, max=max_radius)
         norm = torch.norm(x, p=2, dim=-1, keepdim=True).clamp(min=eps)
         direction = x / norm
@@ -233,14 +239,15 @@ class HyperbolicOps:
         """
         with torch.no_grad():
             radius = HyperbolicOps.get_radius(x)
-            max_radius = 1.0 / math.sqrt(c)
+            max_radius = 1.0 / HyperbolicOps._sqrt_curvature(c)
+            max_radius_value = max_radius.item() if torch.is_tensor(max_radius) else max_radius
             stats = {
                 "name": name,
                 "mean_norm": radius.mean().item(),
                 "max_norm": radius.max().item(),
                 "min_norm": radius.min().item(),
                 "std_norm": radius.std().item(),
-                "max_allowed": max_radius,
+                "max_allowed": max_radius_value,
                 "pct_near_boundary": (radius > 0.9 * max_radius).float().mean().item() * 100,
             }
             logger.debug(f"{name} stats: mean={stats['mean_norm']:.4f}, "
@@ -282,7 +289,7 @@ class HyperbolicOps:
         Returns:
             Scale factor sqrt(c)
         """
-        return math.sqrt(c)
+        return HyperbolicOps._sqrt_curvature(c)
 
 
 class HyperbolicLayer(nn.Module):

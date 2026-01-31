@@ -149,6 +149,9 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--radius-max` | 静态半径最大值 | 3.0 |
 | `--radius-lambda` | 半径监督损失权重 | 0.02 |
 | `--radius-epsilon` | 时间半径扰动上限 | 0.1 |
+| `--curvature-min` | 曲率调度最小值 | 1e-4 |
+| `--curvature-max` | 曲率调度最大值 | 1e-1 |
+| `--curvature-warmup-epochs` | 曲率 warmup 轮数 | 0 |
 | `--verbose` | 启用详细调试日志（新） | False |
 | `--log-file` | 将日志保存到文件（新） | False |
 | `--run-analysis` | 运行分析模式，记录详细统计信息（新） | False |
