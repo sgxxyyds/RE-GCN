@@ -183,6 +183,11 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
     return radius_min + (radius_max - radius_min) * normed
 
 
+def _clamp_value(value, min_value, max_value):
+    """Clamp a numeric value to bounds and return a Python float."""
+    return min(max(value, min_value), max_value)
+
+
 def run_experiment(args):
     """
     Run the training/testing experiment with comprehensive logging.
@@ -203,6 +208,18 @@ def run_experiment(args):
     logger.info("=" * 60)
     logger.info(f"Arguments: {args}")
     
+    if args.curvature_warmup_epochs < 0:
+        raise ValueError("curvature_warmup_epochs must be non-negative")
+    if args.curvature < args.curvature_min:
+        logger.warning("Curvature is below curvature_min; it will be clamped during training.")
+    if args.curvature > args.curvature_max:
+        logger.warning("Curvature is above curvature_max; it will be clamped during training.")
+    if not args.learn_curvature and args.curvature_warmup_epochs > 0:
+        logger.warning(
+            "Curvature warmup is enabled without learn_curvature; "
+            "warmup settings will be ignored."
+        )
+
     # Load data
     logger.info("Loading graph data...")
     data = utils.load_data(args.dataset)
@@ -236,13 +253,15 @@ def run_experiment(args):
     
     # Model name for checkpointing (updated to include new parameters)
     use_residual = not args.disable_residual
-    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-gpu{}".format(
-        args.dataset, args.encoder, args.decoder, args.n_layers,
-        args.curvature, args.train_history_len, args.weight, args.angle,
-        args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout,
-        int(use_residual), int(args.learn_curvature),
-        args.gpu
+    model_name = (
+        f"hyperbolic-{args.dataset}-{args.encoder}-{args.decoder}-ly{args.n_layers}"
+        f"-c{args.curvature}-his{args.train_history_len}-weight:{args.weight}-angle:{args.angle}"
+        f"-dp{args.dropout}|{args.input_dropout}|{args.hidden_dropout}|{args.feat_dropout}"
+        f"-res{int(use_residual)}-lc{int(args.learn_curvature)}"
     )
+    if args.learn_curvature:
+        model_name += f"-cmin{args.curvature_min}-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}"
+    model_name += f"-gpu{args.gpu}"
     model_state_file = '../models/' + model_name
     logger.info(f"Model checkpoint: {model_state_file}")
     logger.info(f"CUDA available: {torch.cuda.is_available()}")
@@ -310,7 +329,9 @@ def run_experiment(args):
         radius_lambda=args.radius_lambda,
         radius_min=args.radius_min,
         radius_max=args.radius_max,
-        radius_epsilon=args.radius_epsilon
+        radius_epsilon=args.radius_epsilon,
+        curvature_min=args.curvature_min,
+        curvature_max=args.curvature_max
     )
     
     # Log model parameter count
@@ -355,6 +376,9 @@ def run_experiment(args):
         early_stop_patience = 20
         training_start_time = time.time()
         
+        initial_curvature = None
+        warmup_complete = False
+
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
             model.train()
@@ -368,6 +392,21 @@ def run_experiment(args):
             idx = list(range(len(train_list)))
             random.shuffle(idx)
             
+            if args.learn_curvature:
+                if initial_curvature is None:
+                    initial_curvature = _clamp_value(
+                        model.get_curvature().item(),
+                        args.curvature_min,
+                        args.curvature_max,
+                    )
+                if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
+                    warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
+                    current_max = initial_curvature + (args.curvature_max - initial_curvature) * warmup_progress
+                    model.set_curvature_bounds(curvature_max=current_max)
+                elif not warmup_complete:
+                    model.set_curvature_bounds(curvature_max=args.curvature_max)
+                    warmup_complete = True
+
             for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}"):
                 if train_sample_num == 0:
                     continue
@@ -498,6 +537,9 @@ if __name__ == '__main__':
     # Hyperbolic space settings
     parser.add_argument("--curvature", type=float, default=0.01, help="Curvature of hyperbolic space")
     parser.add_argument("--learn-curvature", action='store_true', default=False, help="Learn curvature during training (NEW)")
+    parser.add_argument("--curvature-min", type=float, default=1e-4, help="Minimum curvature for scheduling")
+    parser.add_argument("--curvature-max", type=float, default=1e-1, help="Maximum curvature for scheduling")
+    parser.add_argument("--curvature-warmup-epochs", type=int, default=0, help="Warmup epochs for curvature scheduling")
     parser.add_argument("--disable-residual", action='store_true', default=False, help="Disable residual temporal radius evolution")
     parser.add_argument("--radius-alpha", type=float, default=0.5, help="Weight for degree-based radius target")
     parser.add_argument("--radius-beta", type=float, default=0.5, help="Weight for frequency-based radius target")
