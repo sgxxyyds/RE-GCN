@@ -41,8 +41,9 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
             checkpoint = torch.load(model_name, map_location=torch.device(args.gpu))
         else:
             checkpoint = torch.load(model_name, map_location=torch.device('cpu'))
-        print("Load Model name: {}. Using best epoch : {}".format(model_name, checkpoint['epoch']))  # use best stat checkpoint
-        print("\n"+"-"*10+"start testing"+"-"*10+"\n")
+        if args.run_analysis:
+            print("Load Model name: {}. Using best epoch : {}".format(model_name, checkpoint['epoch']))  # use best stat checkpoint
+            print("\n"+"-"*10+"start testing"+"-"*10+"\n")
         model.load_state_dict(checkpoint['state_dict'])
 
     model.eval()
@@ -56,7 +57,7 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda, all_ans_
         all_rel_seq = sp.load_npz(
             '../data/{}/history/rel_history_{}.npz'.format(args.dataset, history_time_nogt))
 
-    for time_idx, test_snap in enumerate(tqdm(test_list)):
+    for time_idx, test_snap in enumerate(tqdm(test_list, disable=not args.run_analysis)):
         input_list = [snap for snap in history_list[history_len+time_idx-args.test_history_len:history_len+time_idx]]
         history_glist = [build_sub_graph(num_nodes, num_rels, g, use_cuda, args.gpu) for g in input_list]
 
@@ -292,7 +293,7 @@ def run_experiment(args, history_len=None, n_layers=None, dropout=None, n_bases=
 
             idx = [_ for _ in range(len(train_list))]
             random.shuffle(idx)
-            for train_sample_num in tqdm(idx):
+            for train_sample_num in tqdm(idx, disable=not args.run_analysis):
                 if train_sample_num == 0: continue
                 output = train_list[train_sample_num:train_sample_num+1]
                 if train_sample_num - args.train_history_len<0:
@@ -365,8 +366,9 @@ def run_experiment(args, history_len=None, n_layers=None, dropout=None, n_bases=
                 optimizer.step()
                 optimizer.zero_grad()
 
-            print("Epoch {:04d} | Ave Loss: {:.4f} | entity-relation-contrastive-static:{:.4f}-{:.4f}-{:.4f}-{:.4f} Best MRR {:.4f} | Model {} "
-                  .format(epoch, np.mean(losses), np.mean(losses_e), np.mean(losses_r), np.mean(losses_spc), np.mean(losses_static), best_mrr, model_name))
+            if epoch % args.log_interval == 0:
+                print("Epoch {:04d} | Ave Loss: {:.4f} | entity-relation-contrastive-static:{:.4f}-{:.4f}-{:.4f}-{:.4f} Best MRR {:.4f} | Model {} "
+                      .format(epoch, np.mean(losses), np.mean(losses_e), np.mean(losses_r), np.mean(losses_spc), np.mean(losses_static), best_mrr, model_name))
 
             # validation
             if epoch and epoch % args.evaluate_every == 0:
@@ -429,6 +431,8 @@ if __name__ == '__main__':
                         help="load stat from dir and directly test")
     parser.add_argument("--run-analysis", action='store_true', default=False,
                         help="print log info")
+    parser.add_argument("--log-interval", type=int, default=1,
+                        help="log training summary every N epochs")
     parser.add_argument("--run-statistic", action='store_true', default=False,
                         help="statistic the result")
     parser.add_argument("--multi-step", action='store_true', default=False,
@@ -620,6 +624,3 @@ if __name__ == '__main__':
     else:
         run_experiment(args)
     sys.exit()
-
-
-

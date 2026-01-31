@@ -19,7 +19,8 @@ class BaseRGCN(nn.Module):
         self.use_cuda = use_cuda
         self.run_analysis = analysis
         self.skip_connect = skip_connect
-        print("use layer :{}".format(encoder_name))
+        if self.run_analysis:
+            print("use layer :{}".format(encoder_name))
         self.rel_emb = rel_emb
         self.opn = opn
         # create rgcn layers
@@ -59,11 +60,12 @@ class BaseRGCN(nn.Module):
     def forward(self, g):
         if self.features is not None:
             g.ndata['id'] = self.features
-        print("h before GCN message passing")
-        print(g.ndata['h'])
-        print("h behind GCN message passing")
+        if self.run_analysis:
+            print("h before GCN message passing")
+            print(g.ndata['h'])
+            print("h behind GCN message passing")
         for layer in self.layers:
             layer(g)
-        print(g.ndata['h'])
+        if self.run_analysis:
+            print(g.ndata['h'])
         return g.ndata.pop('h')
-
