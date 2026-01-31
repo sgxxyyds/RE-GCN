@@ -232,8 +232,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
         # Option to learn curvature or keep it fixed
         if learn_curvature:
             # Log-parameterization with bounds (c = exp(log_c))
-            initial_clamped_curvature = float(min(max(c, curvature_min), curvature_max))
-            self.log_c = nn.Parameter(torch.tensor(math.log(initial_clamped_curvature)))
+            clamped_c = float(min(max(c, curvature_min), curvature_max))
+            self.log_c = nn.Parameter(torch.tensor(math.log(clamped_c)))
             logger.info(f"Using learnable curvature, initialized at c={c}")
         else:
             self.register_buffer('c', torch.tensor(c))
@@ -344,7 +344,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
             return self.c
 
     def set_curvature_bounds(self, curvature_min=None, curvature_max=None):
-        """Update curvature bounds for learnable curvature."""
+        """
+        Update curvature bounds for learnable curvature scheduling.
+
+        Args:
+            curvature_min: Optional new minimum curvature bound.
+            curvature_max: Optional new maximum curvature bound.
+        """
         if curvature_min is not None:
             self.curvature_min = curvature_min
         if curvature_max is not None:

@@ -184,6 +184,7 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
 
 
 def _clamp_curvature(value, min_value, max_value):
+    """Clamp curvature value to bounds and return a Python float."""
     return torch.clamp(
         torch.tensor(value, dtype=torch.float),
         min=min_value,
@@ -213,12 +214,11 @@ def run_experiment(args):
     
     if args.curvature_warmup_epochs < 0:
         raise ValueError("curvature_warmup_epochs must be non-negative")
-    if args.learn_curvature:
-        if args.curvature < args.curvature_min:
-            logger.warning("Curvature is below curvature_min; it will be clamped during training.")
-        if args.curvature > args.curvature_max:
-            logger.warning("Curvature is above curvature_max; it will be clamped during training.")
-    elif args.curvature_warmup_epochs > 0:
+    if args.curvature < args.curvature_min:
+        logger.warning("Curvature is below curvature_min; it will be clamped during training.")
+    if args.curvature > args.curvature_max:
+        logger.warning("Curvature is above curvature_max; it will be clamped during training.")
+    if not args.learn_curvature and args.curvature_warmup_epochs > 0:
         logger.warning(
             "Curvature warmup is enabled without learn_curvature; "
             "warmup settings will be ignored."

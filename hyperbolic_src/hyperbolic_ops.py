@@ -29,6 +29,7 @@ class HyperbolicOps:
 
     @staticmethod
     def _sqrt_curvature(c):
+        """Return sqrt(c) handling scalar or tensor curvature values."""
         if torch.is_tensor(c):
             return torch.sqrt(c)
         return math.sqrt(c)
