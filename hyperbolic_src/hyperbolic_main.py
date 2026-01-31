@@ -357,6 +357,20 @@ def run_experiment(args):
         early_stop_patience = 20
         training_start_time = time.time()
         
+        if args.curvature_warmup_epochs < 0:
+            raise ValueError("curvature_warmup_epochs must be non-negative")
+        if args.learn_curvature and args.curvature > args.curvature_max:
+            logger.warning(
+                "Initial curvature is greater than curvature_max; "
+                "adjusting warmup start to curvature_max."
+            )
+            args.curvature = args.curvature_max
+        if not args.learn_curvature and args.curvature_warmup_epochs > 0:
+            logger.warning(
+                "Curvature warmup is enabled without learn_curvature; "
+                "warmup settings will be ignored."
+            )
+
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
             model.train()
@@ -371,12 +385,6 @@ def run_experiment(args):
             random.shuffle(idx)
             
             if args.learn_curvature:
-                if args.curvature > args.curvature_max:
-                    logger.warning(
-                        "Initial curvature is greater than curvature_max; "
-                        "adjusting warmup start to curvature_max."
-                    )
-                    args.curvature = args.curvature_max
                 if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = args.curvature + (args.curvature_max - args.curvature) * warmup_progress
