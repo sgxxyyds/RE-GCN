@@ -171,6 +171,11 @@ python hyperbolic_main.py -d ICEWS14s \
 
 使用 `--run-analysis --verbose --log-file` 启用完整的日志记录。
 
+v2 版本后台训练示例：
+```bash
+nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction --relation-prediction --curvature 0.01 --run-analysis --verbose --log-file --gpu 0 > train_v2.log 2>&1 &
+```
+
 ### 评估模型
 
 添加 `--test` 标志以评估预训练模型：
