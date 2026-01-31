@@ -185,11 +185,7 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
 
 def _clamp_curvature(value, min_value, max_value):
     """Clamp curvature value to bounds and return a Python float."""
-    return torch.clamp(
-        torch.tensor(value, dtype=torch.float),
-        min=min_value,
-        max=max_value
-    ).item()
+    return min(max(value, min_value), max_value)
 
 
 def run_experiment(args):
@@ -262,8 +258,10 @@ def run_experiment(args):
         f"-c{args.curvature}-his{args.train_history_len}-weight:{args.weight}-angle:{args.angle}"
         f"-dp{args.dropout}|{args.input_dropout}|{args.hidden_dropout}|{args.feat_dropout}"
         f"-res{int(use_residual)}-lc{int(args.learn_curvature)}"
-        f"-cmin{args.curvature_min}-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}-gpu{args.gpu}"
     )
+    if args.learn_curvature:
+        model_name += f"-cmin{args.curvature_min}-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}"
+    model_name += f"-gpu{args.gpu}"
     model_state_file = '../models/' + model_name
     logger.info(f"Model checkpoint: {model_state_file}")
     logger.info(f"CUDA available: {torch.cuda.is_available()}")
