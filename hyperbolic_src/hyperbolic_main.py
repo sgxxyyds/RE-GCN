@@ -262,7 +262,7 @@ def run_experiment(args):
         f"-c{args.curvature}-his{args.train_history_len}-weight:{args.weight}-angle:{args.angle}"
         f"-dp{args.dropout}|{args.input_dropout}|{args.hidden_dropout}|{args.feat_dropout}"
         f"-res{int(use_residual)}-lc{int(args.learn_curvature)}"
-        f"-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}-gpu{args.gpu}"
+        f"-cmin{args.curvature_min}-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}-gpu{args.gpu}"
     )
     model_state_file = '../models/' + model_name
     logger.info(f"Model checkpoint: {model_state_file}")
@@ -378,8 +378,9 @@ def run_experiment(args):
         early_stop_patience = 20
         training_start_time = time.time()
         
-        initial_curvature = None
-        warmup_complete = False
+        if args.learn_curvature:
+            initial_curvature = None
+            warmup_complete = False
 
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
