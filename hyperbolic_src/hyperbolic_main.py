@@ -97,7 +97,7 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
     # Get history for testing
     input_list = [snap for snap in history_list[-args.test_history_len:]]
     
-    for time_idx, test_snap in enumerate(tqdm(test_list)):
+    for time_idx, test_snap in enumerate(tqdm(test_list, disable=True)):
         # Build history graphs
         history_glist = [build_sub_graph(num_nodes, num_rels, g, use_cuda, args.gpu) 
                         for g in input_list]
@@ -407,7 +407,7 @@ def run_experiment(args):
                     model.set_curvature_bounds(curvature_max=args.curvature_max)
                     warmup_complete = True
 
-            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}"):
+            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}", disable=True):
                 if train_sample_num == 0:
                     continue
                 
