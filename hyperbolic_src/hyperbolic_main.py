@@ -38,8 +38,15 @@ from rgcn.knowledge_graph import _read_triplets_as_list
 from hyperbolic_src.hyperbolic_model import HyperbolicRecurrentRGCN
 
 # Set up logging
-def setup_logging(log_level=logging.INFO, log_file=None):
-    """Set up logging configuration."""
+def setup_logging(log_level=logging.INFO, log_file=None, debug_per_batch=False):
+    """Set up logging configuration.
+    
+    Args:
+        log_level: Base logging level for the main logger
+        log_file: Optional log file path
+        debug_per_batch: If True, enable DEBUG logging for per-batch messages
+                        (hyperbolic_model and hyperbolic_ops loggers)
+    """
     handlers = [logging.StreamHandler()]
     if log_file:
         handlers.append(logging.FileHandler(log_file))
@@ -50,9 +57,12 @@ def setup_logging(log_level=logging.INFO, log_file=None):
         handlers=handlers
     )
     
-    # Set specific loggers
-    logging.getLogger("hyperbolic_model").setLevel(log_level)
-    logging.getLogger("hyperbolic_ops").setLevel(log_level)
+    # Set specific loggers to INFO level by default to avoid excessive per-batch DEBUG output
+    # These loggers produce DEBUG messages for each batch, which is too verbose
+    # Use --debug-per-batch to enable DEBUG output for troubleshooting
+    per_batch_log_level = logging.DEBUG if debug_per_batch else logging.INFO
+    logging.getLogger("hyperbolic_model").setLevel(per_batch_log_level)
+    logging.getLogger("hyperbolic_ops").setLevel(per_batch_log_level)
     
     return logging.getLogger("hyperbolic_main")
 
@@ -202,7 +212,8 @@ def run_experiment(args):
     # Set up logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     log_file = f"hyperbolic_training_{args.dataset}.log" if args.log_file else None
-    logger = setup_logging(log_level, log_file)
+    debug_per_batch = getattr(args, 'debug_per_batch', False)
+    logger = setup_logging(log_level, log_file, debug_per_batch)
     
     logger.info("=" * 60)
     logger.info("Hyperbolic Temporal RE-GCN Training")
@@ -586,6 +597,7 @@ if __name__ == '__main__':
     
     # Logging settings (NEW)
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
+    parser.add_argument("--debug-per-batch", action='store_true', default=False, help="Enable DEBUG logging for per-batch messages (very verbose)")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
     
