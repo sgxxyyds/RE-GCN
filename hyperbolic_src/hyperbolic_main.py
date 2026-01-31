@@ -369,11 +369,7 @@ def run_experiment(args):
         early_stop_patience = 20
         training_start_time = time.time()
         
-        initial_curvature = float(args.curvature)
-        if args.curvature > args.curvature_max:
-            initial_curvature = args.curvature_max
-        elif args.curvature < args.curvature_min:
-            initial_curvature = args.curvature_min
+        initial_curvature = None
 
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
@@ -389,6 +385,8 @@ def run_experiment(args):
             random.shuffle(idx)
             
             if args.learn_curvature:
+                if initial_curvature is None:
+                    initial_curvature = model.get_curvature().item()
                 if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = initial_curvature + (args.curvature_max - initial_curvature) * warmup_progress
