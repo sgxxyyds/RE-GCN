@@ -183,6 +183,10 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
     return radius_min + (radius_max - radius_min) * normed
 
 
+def _clamp_curvature(value, min_value, max_value):
+    return min(max(value, min_value), max_value)
+
+
 def run_experiment(args):
     """
     Run the training/testing experiment with comprehensive logging.
@@ -371,6 +375,7 @@ def run_experiment(args):
         training_start_time = time.time()
         
         initial_curvature = None
+        warmup_complete = False
 
         for epoch in range(args.n_epochs):
             epoch_start_time = time.time()
@@ -387,14 +392,18 @@ def run_experiment(args):
             
             if args.learn_curvature:
                 if initial_curvature is None:
-                    initial_curvature = model.get_curvature().item()
-                    initial_curvature = min(max(initial_curvature, args.curvature_min), args.curvature_max)
+                    initial_curvature = _clamp_curvature(
+                        model.get_curvature().item(),
+                        args.curvature_min,
+                        args.curvature_max,
+                    )
                 if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = initial_curvature + (args.curvature_max - initial_curvature) * warmup_progress
                     model.set_curvature_bounds(curvature_max=current_max)
-                else:
+                elif not warmup_complete:
                     model.set_curvature_bounds(curvature_max=args.curvature_max)
+                    warmup_complete = True
 
             for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}"):
                 if train_sample_num == 0:
