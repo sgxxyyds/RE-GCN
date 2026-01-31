@@ -184,7 +184,11 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
 
 
 def _clamp_curvature(value, min_value, max_value):
-    return min(max(value, min_value), max_value)
+    return torch.clamp(
+        torch.tensor(value, dtype=torch.float),
+        min=min_value,
+        max=max_value
+    ).item()
 
 
 def run_experiment(args):
@@ -253,12 +257,12 @@ def run_experiment(args):
     
     # Model name for checkpointing (updated to include new parameters)
     use_residual = not args.disable_residual
-    model_name = "hyperbolic-{}-{}-{}-ly{}-c{}-his{}-weight:{}-angle:{}-dp{}|{}|{}|{}-res{}-lc{}-cmax{}-cw{}-gpu{}".format(
-        args.dataset, args.encoder, args.decoder, args.n_layers,
-        args.curvature, args.train_history_len, args.weight, args.angle,
-        args.dropout, args.input_dropout, args.hidden_dropout, args.feat_dropout,
-        int(use_residual), int(args.learn_curvature), args.curvature_max, args.curvature_warmup_epochs,
-        args.gpu
+    model_name = (
+        f"hyperbolic-{args.dataset}-{args.encoder}-{args.decoder}-ly{args.n_layers}"
+        f"-c{args.curvature}-his{args.train_history_len}-weight:{args.weight}-angle:{args.angle}"
+        f"-dp{args.dropout}|{args.input_dropout}|{args.hidden_dropout}|{args.feat_dropout}"
+        f"-res{int(use_residual)}-lc{int(args.learn_curvature)}"
+        f"-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}-gpu{args.gpu}"
     )
     model_state_file = '../models/' + model_name
     logger.info(f"Model checkpoint: {model_state_file}")
