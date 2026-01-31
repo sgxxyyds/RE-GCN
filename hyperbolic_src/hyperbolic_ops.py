@@ -240,7 +240,12 @@ class HyperbolicOps:
         with torch.no_grad():
             radius = HyperbolicOps.get_radius(x)
             max_radius = 1.0 / HyperbolicOps._sqrt_curvature(c)
-            max_radius_value = max_radius.item() if torch.is_tensor(max_radius) else max_radius
+            if torch.is_tensor(max_radius):
+                max_radius_tensor = max_radius
+                max_radius_value = max_radius.item()
+            else:
+                max_radius_tensor = torch.tensor(max_radius, device=radius.device, dtype=radius.dtype)
+                max_radius_value = max_radius
             stats = {
                 "name": name,
                 "mean_norm": radius.mean().item(),
@@ -248,7 +253,7 @@ class HyperbolicOps:
                 "min_norm": radius.min().item(),
                 "std_norm": radius.std().item(),
                 "max_allowed": max_radius_value,
-                "pct_near_boundary": (radius > 0.9 * max_radius).float().mean().item() * 100,
+                "pct_near_boundary": (radius > 0.9 * max_radius_tensor).float().mean().item() * 100,
             }
             logger.debug(f"{name} stats: mean={stats['mean_norm']:.4f}, "
                         f"max={stats['max_norm']:.4f}, "

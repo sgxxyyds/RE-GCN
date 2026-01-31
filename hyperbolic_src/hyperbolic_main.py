@@ -371,6 +371,12 @@ def run_experiment(args):
             random.shuffle(idx)
             
             if args.learn_curvature:
+                if args.curvature > args.curvature_max:
+                    logger.warning(
+                        "Initial curvature is greater than curvature_max; "
+                        "adjusting warmup start to curvature_max."
+                    )
+                    args.curvature = args.curvature_max
                 if args.curvature_warmup_epochs > 0 and epoch < args.curvature_warmup_epochs:
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = args.curvature + (args.curvature_max - args.curvature) * warmup_progress
