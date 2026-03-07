@@ -4,14 +4,17 @@ This module implements a **Hyperbolic Space-based Temporal Knowledge Graph Compl
 
 ## Overview
 
-Based on the technical solution document (`hyperbolic_temporal_re_gcn_技术方案.md`), this implementation features:
+Based on the technical solution document (`hyperbolic_temporal_re_gcn_技术方案.md`) and the optimization plan (`模型优化方案.md`), this implementation features:
 
 1. **Hyperbolic Entity Embeddings** - Using the Poincaré Ball model where the radius represents semantic abstraction level
 2. **Radius Semantic Grounding** - Static radius targets derived from graph statistics with supervision loss
 3. **Residual Temporal Radius Evolution** - Bounded radius perturbations on top of static semantics
-4. **Hyperbolic RE-GCN** - Graph convolution operating in tangent space with hyperbolic mappings
-5. **Hyperbolic GRU** - Temporal smoothing using GRU operations in hyperbolic space
-6. **Euclidean Decoder** - Stable scoring in tangent space using ConvTransE/DistMult
+4. **Hyperbolic RE-GCN** - Graph convolution operating in tangent space with hyperbolic mappings (baseline encoder)
+5. **FHNN Encoder** - Fully Hyperbolic GCN with Einstein midpoint aggregation and Möbius operations
+6. **LGCN Encoder** - Lorentz Model GCN with improved numerical stability (recommended)
+7. **HGAT Encoder** - Hyperbolic Graph Attention Network with distance-based attention weights
+8. **Hyperbolic GRU** - Temporal smoothing using GRU operations in hyperbolic space
+9. **Euclidean Decoder** - Stable scoring in tangent space using ConvTransE/DistMult
 
 ## Architecture
 
@@ -22,7 +25,11 @@ Hyperbolic Entity Embeddings
 [ Temporal Hyperbolic Evolution (Radius-based) ]
         │
         ▼
-[ Hyperbolic RE-GCN ]
+[ Hyperbolic GNN Encoder ]
+  ├── hyperbolic_uvrgcn: Tangent-space RGCN (baseline)
+  ├── fhnn:             Fully Hyperbolic GCN (Einstein midpoint)
+  ├── lgcn:             Lorentz Model GCN (recommended, numerically stable)
+  └── hgat:             Hyperbolic Graph Attention Network
         │
         ▼
 [ Hyperbolic GRU (Temporal Smoothing) ]
@@ -36,8 +43,8 @@ Hyperbolic Entity Embeddings
 ```
 hyperbolic_src/
 ├── __init__.py              # Module exports
-├── hyperbolic_ops.py        # Poincaré ball operations (exp/log maps, Möbius ops)
-├── hyperbolic_layers.py     # Hyperbolic RGCN layers
+├── hyperbolic_ops.py        # Poincaré ball + Lorentz model operations
+├── hyperbolic_layers.py     # Hyperbolic RGCN + FHNN + LGCN + HGAT layers
 ├── hyperbolic_gru.py        # Hyperbolic GRU modules
 ├── hyperbolic_decoder.py    # Decoders for TKGC
 ├── hyperbolic_model.py      # Main HyperbolicRecurrentRGCN model
@@ -54,6 +61,37 @@ hyperbolic_src/
 - `mobius_add(x, y)`: Möbius addition in hyperbolic space
 - `hyperbolic_distance(x, y)`: Compute hyperbolic distance
 - `project_to_ball(x)`: Project points inside the Poincaré ball
+- `LorentzOps.to_lorentz(x)`: Convert Poincaré ball point to Lorentz model
+- `LorentzOps.to_poincare(y)`: Convert Lorentz model point to Poincaré ball
+- `LorentzOps.lorentz_centroid(...)`: Weighted centroid on Lorentz manifold
+- `LorentzOps.lorentz_distance(x, y)`: Lorentz model distance
+
+### New GNN Encoder Architectures
+
+#### FHNN (Fully Hyperbolic Neural Network)
+
+All graph operations are performed directly on the Poincaré ball:
+- **Message**: Möbius matrix-vector multiplication (`exp_0(W · log_0(h))`)
+- **Aggregation**: Einstein midpoint (gyrovector space weighted mean)
+  ```
+  Agg_v = Σ(w_i * λ_c(m_i) * m_i) / Σ(w_i * λ_c(m_i))
+  ```
+  where `λ_c(x) = 2 / (1 - c||x||²)` is the Lorentz factor
+
+#### LGCN (Lorentz GCN) — **Recommended**
+
+Performs message passing in the numerically stable Lorentz model, then converts back to Poincaré ball:
+- **Internal computation**: Lorentz model (hyperboloid)
+- **Aggregation**: Lorentz weighted centroid (Fréchet mean approximation)
+- **Interface**: Poincaré ball (compatible with existing decoder)
+- **Advantage**: Significantly better numerical stability for deep networks
+
+#### HGAT (Hyperbolic Graph Attention)
+
+Attention weights based on hyperbolic distances:
+- **Attention**: `e_ij = LeakyReLU(a_r · log_0(h_i ⊕ (-h_j)))`
+- **Aggregation**: Einstein midpoint weighted by softmax attention
+- **Multi-head**: Multiple attention heads averaging in tangent space
 
 ### Radius Semantic Grounding
 
@@ -71,23 +109,9 @@ Time evolution only introduces bounded perturbations:
 r(t) = r_static + Δr(t)
 ```
 
-### Hyperbolic RE-GCN
-
-Performs RGCN aggregation in tangent space:
-1. Map nodes to tangent space: `log_0(h)`
-2. Apply RGCN aggregation (radius-aware message weights)
-3. Map back to hyperbolic space: `exp_0(h')`
-
-### Hyperbolic GRU
-
-Provides temporal smoothing:
-1. Map input/hidden to tangent space
-2. Apply standard GRU
-3. Map output back to hyperbolic space
-
 ## Usage
 
-### Training
+### Training with LGCN Encoder (Recommended)
 
 ```bash
 cd hyperbolic_src
@@ -102,6 +126,50 @@ python hyperbolic_main.py -d ICEWS14s \
     --entity-prediction \
     --relation-prediction \
     --curvature 0.01 \
+    --encoder lgcn \
+    --gpu 0
+```
+
+### Training with FHNN Encoder
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --n-layers 2 --n-hidden 200 \
+    --self-loop --layer-norm \
+    --entity-prediction --relation-prediction \
+    --curvature 0.01 \
+    --encoder fhnn \
+    --gpu 0
+```
+
+### Training with HGAT Encoder
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --n-layers 2 --n-hidden 200 \
+    --self-loop --layer-norm \
+    --entity-prediction --relation-prediction \
+    --curvature 0.01 \
+    --encoder hgat \
+    --attn-heads 4 \
+    --gpu 0
+```
+
+### Baseline (Original tangent-space RGCN)
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --n-layers 2 --n-hidden 200 \
+    --self-loop --layer-norm \
+    --entity-prediction --relation-prediction \
+    --curvature 0.01 \
+    --encoder hyperbolic_uvrgcn \
     --gpu 0
 ```
 
@@ -113,8 +181,9 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--n-hidden` | Hidden dimension | 200 |
 | `--n-layers` | Number of GCN layers | 2 |
 | `--train-history-len` | Training history length | 10 |
-| `--encoder` | Encoder type | hyperbolic_uvrgcn |
-| `--decoder` | Decoder type | hyperbolic_convtranse |
+| `--encoder` | Encoder type (`hyperbolic_uvrgcn`, `fhnn`, `lgcn`, `hgat`) | `hyperbolic_uvrgcn` |
+| `--attn-heads` | Number of attention heads (HGAT only) | 4 |
+| `--decoder` | Decoder type | `hyperbolic_convtranse` |
 | `--radius-alpha` | Degree weight for radius target | 0.5 |
 | `--radius-beta` | Frequency weight for radius target | 0.5 |
 | `--radius-min` | Minimum static radius | 0.5 |
@@ -126,6 +195,15 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--curvature-max` | Maximum curvature for scheduling | 1e-1 |
 | `--curvature-warmup-epochs` | Warmup epochs for curvature schedule | 0 |
 | `--log-interval` | Log epoch summary every N epochs | 1 |
+
+## Encoder Comparison
+
+| Encoder | Hyperbolic Completeness | Numerical Stability | Computation | Notes |
+|---------|------------------------|--------------------|-----------|----|
+| `hyperbolic_uvrgcn` | ★★☆☆☆ | ★★★★☆ | Fast | Tangent-space aggregation (baseline) |
+| `fhnn` | ★★★★★ | ★★★☆☆ | Medium | Einstein midpoint, full Poincaré ball ops |
+| `lgcn` | ★★★★☆ | ★★★★★ | Medium | **Recommended** — Lorentz model, stable |
+| `hgat` | ★★★★☆ | ★★★☆☆ | Medium-High | Hyperbolic distance attention |
 
 ## Mathematical Foundation
 
@@ -157,6 +235,33 @@ x ⊕_c y = ((1 + 2c<x,y> + c||y||²)x + (1 - c||x||²)y) /
           (1 + 2c<x,y> + c²||x||²||y||²)
 ```
 
+### Lorentz Model
+
+The Lorentz manifold with curvature c:
+```
+L^{d,c} = {x ∈ R^{d+1} : <x,x>_L = -1/c, x_0 > 0}
+```
+Minkowski inner product: `<x,y>_L = -x_0*y_0 + Σ(x_i*y_i, i≥1)`
+
+**Poincaré → Lorentz** conversion:
+```
+y_0 = (1 + c||p||²) / (√c * (1 - c||p||²))
+y_i = 2 * p_i / (1 - c||p||²)
+```
+
+**Lorentz → Poincaré** conversion:
+```
+p_i = y_i / (1 + √c * y_0)
+```
+
+### Einstein Midpoint (FHNN/HGAT aggregation)
+
+Weighted Fréchet mean approximation in gyrovector space:
+```
+⊕_c^E {w_i, x_i} = Σ(w_i * λ_c(x_i) * x_i) / Σ(w_i * λ_c(x_i))
+```
+where `λ_c(x) = 2 / (1 - c||x||²)` is the Lorentz/conformal factor.
+
 ## Requirements
 
 - Python 3.7-3.10 (for DGL compatibility)
@@ -169,10 +274,16 @@ x ⊕_c y = ((1 + 2c<x,y> + c||y||²)x + (1 - c||x||²)y) /
 
 1. **First Hyperbolic Space Temporal RE-GCN** - Combines hyperbolic geometry with temporal knowledge graph reasoning
 2. **Explicit Temporal Semantic Level Evolution** - Uses radius to model concept abstraction changes over time
-3. **Geometric Decoupling** - Separates structure propagation (GCN) from temporal memory (GRU)
+3. **Multiple True Hyperbolic Encoders** - FHNN (Einstein midpoint), LGCN (Lorentz model), HGAT (hyperbolic attention)
+4. **Numerically Stable Lorentz Encoder** - Internal Lorentz model computation for improved gradient stability
+5. **Geometric Decoupling** - Separates structure propagation (GCN) from temporal memory (GRU)
 
 ## References
 
 - RE-GCN: Temporal Knowledge Graph Reasoning Based on Evolutional Representation Learning (SIGIR 2021)
 - Hyperbolic Neural Networks (NeurIPS 2018)
+- Fully Hyperbolic Neural Networks (ACL 2022)
+- Lorentzian Graph Convolutional Networks (WWW 2021)
+- Hyperbolic Graph Attention Network (TPAMI 2021)
 - Technical solution document: `hyperbolic_temporal_re_gcn_技术方案.md`
+- Optimization plan: `模型优化方案.md`

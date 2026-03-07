@@ -417,6 +417,165 @@ class TemporalRadiusEvolution(nn.Module):
         return self.last_evolution_stats
 
 
+class LorentzOps:
+    """
+    Lorentz/Hyperboloid Model Geometric Operations.
+
+    The Lorentz model is numerically more stable than the Poincaré ball model
+    and is preferred for deep GNN architectures.
+
+    The Lorentz model is defined as:
+        L^{d,c} = {x ∈ R^{d+1} : <x,x>_L = -1/c, x_0 > 0}
+    where the Minkowski inner product is:
+        <x,y>_L = -x_0*y_0 + sum(x_i*y_i, i>=1)
+
+    Reference: Zhang et al., "Lorentzian Graph Convolutional Networks" (WWW 2021)
+    """
+
+    EPS = 1e-6
+
+    @staticmethod
+    def inner_product(x, y, keepdim=False):
+        """
+        Minkowski inner product: <x,y>_L = -x0*y0 + sum(xi*yi, i>=1).
+
+        Args:
+            x: Tensor of shape (..., d+1), time component at dim 0
+            y: Tensor of shape (..., d+1)
+            keepdim: Whether to keep the last dimension
+
+        Returns:
+            Inner product, shape (...) or (..., 1) if keepdim=True
+        """
+        time_prod = torch.sum(x[..., :1] * y[..., :1], dim=-1, keepdim=keepdim)
+        space_prod = torch.sum(x[..., 1:] * y[..., 1:], dim=-1, keepdim=keepdim)
+        return -time_prod + space_prod
+
+    @staticmethod
+    def to_lorentz(x, c=0.01, eps=1e-6):
+        """
+        Convert points from Poincaré ball to Lorentz model.
+
+        Maps Poincaré ball coordinates to the Lorentz/Hyperboloid model
+        satisfying <y, y>_L = -1/c.
+
+        Args:
+            x: Points on Poincaré ball, shape (..., d)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Points on Lorentz manifold, shape (..., d+1)
+        """
+        sqrt_c = math.sqrt(c)
+        x_norm_sq = torch.sum(x ** 2, dim=-1, keepdim=True)
+        denom = (1.0 - c * x_norm_sq).clamp(min=eps)
+        # Time component: (1 + c*||x||^2) / (sqrt_c * denom)
+        x0 = (1.0 + c * x_norm_sq) / (sqrt_c * denom)
+        # Spatial components: 2*x / denom  (note: no sqrt_c here)
+        xi = 2.0 * x / denom
+        return torch.cat([x0, xi], dim=-1)
+
+    @staticmethod
+    def to_poincare(y, c=0.01, eps=1e-6):
+        """
+        Convert points from Lorentz model to Poincaré ball.
+
+        Inverse of to_lorentz: y is on Lorentz manifold with <y,y>_L = -1/c.
+
+        Args:
+            y: Points on Lorentz manifold, shape (..., d+1)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Points on Poincaré ball, shape (..., d)
+        """
+        sqrt_c = math.sqrt(c)
+        denom = (1.0 + y[..., :1] * sqrt_c).clamp(min=eps)
+        return y[..., 1:] / denom
+
+    @staticmethod
+    def lorentz_log_map(x, base, c=0.01, eps=1e-6):
+        """
+        Logarithmic map on the Lorentz manifold at a base point.
+
+        Args:
+            x: Target point on Lorentz manifold, shape (..., d+1)
+            base: Base point on Lorentz manifold, shape (..., d+1)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Tangent vector at base, shape (..., d+1)
+        """
+        # Clamp to ensure α ≥ 1/√c for valid acosh (hyperbolic geometry constraint)
+        alpha = -LorentzOps.inner_product(base, x, keepdim=True).clamp(max=-1.0 - eps)
+        coef = torch.acosh(alpha * math.sqrt(c)) / torch.sqrt(
+            (alpha ** 2 - 1.0).clamp(min=eps)
+        )
+        return coef * (x - alpha * base)
+
+    @staticmethod
+    def lorentz_exp_map(v, base, c=0.01, eps=1e-6):
+        """
+        Exponential map on the Lorentz manifold at a base point.
+
+        Args:
+            v: Tangent vector at base, shape (..., d+1)
+            base: Base point on Lorentz manifold, shape (..., d+1)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Point on Lorentz manifold, shape (..., d+1)
+        """
+        v_norm = torch.sqrt(
+            LorentzOps.inner_product(v, v, keepdim=True).clamp(min=eps)
+        )
+        sqrt_c = math.sqrt(c)
+        coef = torch.sinh(sqrt_c * v_norm) / (sqrt_c * v_norm + eps)
+        return torch.cosh(sqrt_c * v_norm) * base + coef * v
+
+    @staticmethod
+    def lorentz_centroid(embeddings, weights, c=0.01, eps=1e-6):
+        """
+        Compute weighted Lorentz centroid (first-order Fréchet mean approximation).
+
+        Args:
+            embeddings: Points on Lorentz manifold, shape (N, d+1)
+            weights: Non-negative weights, shape (N,)
+            c: Curvature parameter
+            eps: Small epsilon for numerical stability
+
+        Returns:
+            Centroid on Lorentz manifold, shape (d+1,)
+        """
+        w = weights / (weights.sum() + eps)
+        centroid = torch.sum(w.unsqueeze(-1) * embeddings, dim=0)
+        # Project back onto the Lorentz manifold: normalize so <x,x>_L = -1/c
+        ip = LorentzOps.inner_product(centroid, centroid, keepdim=True)
+        scale = torch.sqrt(torch.clamp(-ip * c, min=eps))
+        return centroid / scale
+
+    @staticmethod
+    def lorentz_distance(x, y, c=0.01, eps=1e-6):
+        """
+        Compute distance between two points on the Lorentz manifold.
+
+        Args:
+            x: First point, shape (..., d+1)
+            y: Second point, shape (..., d+1)
+            c: Curvature parameter
+            eps: Small epsilon
+
+        Returns:
+            Lorentzian distance, shape (...)
+        """
+        alpha = LorentzOps.inner_product(x, y).clamp(max=-1.0 - eps)
+        return (1.0 / math.sqrt(c)) * torch.acosh(-alpha * math.sqrt(c))
+
+
 class HyperbolicEntityInit(nn.Module):
     """
     Initialize entity embeddings in hyperbolic space.
