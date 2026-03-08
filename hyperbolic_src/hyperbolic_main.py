@@ -38,22 +38,37 @@ from rgcn.knowledge_graph import _read_triplets_as_list
 from hyperbolic_src.hyperbolic_model import HyperbolicRecurrentRGCN
 
 # Set up logging
+class _FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every emit for real-time log visibility."""
+
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
 def setup_logging(log_level=logging.INFO, log_file=None):
     """Set up logging configuration."""
-    handlers = [logging.StreamHandler()]
+    handlers = [_FlushingStreamHandler()]
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
-    
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        )
+        handlers.append(file_handler)
+
+    # Use force=True so the config is applied even if basicConfig was already
+    # called by an imported module (e.g. tqdm, dgl).
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=handlers,
+        force=True,
     )
-    
+
     # Set specific loggers
     logging.getLogger("hyperbolic_model").setLevel(log_level)
     logging.getLogger("hyperbolic_ops").setLevel(log_level)
-    
+
     return logging.getLogger("hyperbolic_main")
 
 
@@ -89,8 +104,8 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
         else:
             checkpoint = torch.load(model_name, map_location=torch.device('cpu'))
         if args.verbose:
-            print("Load Model: {}. Using best epoch: {}".format(model_name, checkpoint['epoch']))
-            print("\n" + "-" * 10 + "start testing" + "-" * 10 + "\n")
+            print("Load Model: {}. Using best epoch: {}".format(model_name, checkpoint['epoch']), flush=True)
+            print("\n" + "-" * 10 + "start testing" + "-" * 10 + "\n", flush=True)
         model.load_state_dict(checkpoint['state_dict'])
     
     model.eval()
@@ -409,7 +424,8 @@ def run_experiment(args):
                     model.set_curvature_bounds(curvature_max=args.curvature_max)
                     warmup_complete = True
 
-            for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}", disable=not args.verbose):
+            processed_batches = 0
+            for batch_idx, train_sample_num in tqdm(enumerate(idx), total=len(idx), desc=f"Epoch {epoch}", disable=not args.verbose):
                 if train_sample_num == 0:
                     continue
                 
@@ -454,6 +470,16 @@ def run_experiment(args):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
                 optimizer.step()
                 optimizer.zero_grad()
+
+                processed_batches += 1
+                # Intra-epoch batch-level logging for real-time progress visibility
+                if args.log_batch_interval > 0 and processed_batches % args.log_batch_interval == 0:
+                    logger.info(
+                        f"Epoch {epoch:04d} | Batch {processed_batches}/{len(idx) - 1} | "
+                        f"Loss: {np.mean(losses):.4f} | "
+                        f"E/R/S/Rad: {np.mean(losses_e):.4f}/{np.mean(losses_r):.4f}/"
+                        f"{np.mean(losses_static):.4f}/{np.mean(losses_radius):.4f}"
+                    )
             
             # Calculate epoch time
             epoch_time = time.time() - epoch_start_time
@@ -468,7 +494,7 @@ def run_experiment(args):
             if epoch % args.log_interval == 0:
                 logger.info(epoch_summary)
                 if args.verbose:
-                    print(epoch_summary)
+                    print(epoch_summary, flush=True)
             
             # Log model-specific training summary
             if args.run_analysis:
@@ -596,8 +622,10 @@ if __name__ == '__main__':
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
+    parser.add_argument("--log-batch-interval", type=int, default=0,
+                        help="Log training loss every N batches within an epoch (0 to disable)")
     
     args = parser.parse_args()
-    print(args)
+    print(args, flush=True)
     
     run_experiment(args)
