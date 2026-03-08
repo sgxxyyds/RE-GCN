@@ -332,7 +332,8 @@ def run_experiment(args):
         radius_max=args.radius_max,
         radius_epsilon=args.radius_epsilon,
         curvature_min=args.curvature_min,
-        curvature_max=args.curvature_max
+        curvature_max=args.curvature_max,
+        num_heads=args.attn_heads,
     )
     
     # Log model parameter count
@@ -556,7 +557,14 @@ if __name__ == '__main__':
     parser.add_argument("--task-weight", type=float, default=0.7, help="Weight of entity prediction task")
     parser.add_argument("--discount", type=float, default=1, help="Discount of static constraint weight")
     parser.add_argument("--angle", type=int, default=10, help="Evolution speed angle")
-    parser.add_argument("--encoder", type=str, default="hyperbolic_uvrgcn", help="Encoder method")
+    parser.add_argument("--encoder", type=str, default="hyperbolic_uvrgcn",
+                        choices=["hyperbolic_uvrgcn", "fhnn", "lgcn", "hgat"],
+                        help="Encoder type: hyperbolic_uvrgcn (tangent-space RGCN), "
+                             "fhnn (Fully Hyperbolic GCN), "
+                             "lgcn (Lorentz Model GCN, recommended for stability), "
+                             "hgat (Hyperbolic Graph Attention Network)")
+    parser.add_argument("--attn-heads", type=int, default=4,
+                        help="Number of attention heads for HGAT encoder")
     parser.add_argument("--dropout", type=float, default=0.2, help="Dropout probability")
     parser.add_argument("--skip-connect", action='store_true', default=False, help="Use skip connections")
     parser.add_argument("--n-hidden", type=int, default=200, help="Hidden dimension")

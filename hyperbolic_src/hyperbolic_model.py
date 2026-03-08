@@ -41,7 +41,10 @@ from hyperbolic_src.hyperbolic_ops import (
 )
 from hyperbolic_src.hyperbolic_layers import (
     HyperbolicRGCNLayer,
-    HyperbolicUnionRGCNLayer
+    HyperbolicUnionRGCNLayer,
+    FHNNCell,
+    LorentzRGCNCell,
+    HGATCell,
 )
 from hyperbolic_src.hyperbolic_decoder import (
     HyperbolicConvTransE,
@@ -158,7 +161,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  learn_curvature=False, use_residual_evolution=True,
                  radius_target=None, radius_lambda=0.02,
                  radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
-                 curvature_min=1e-4, curvature_max=1e-1):
+                 curvature_min=1e-4, curvature_max=1e-1,
+                 num_heads=4):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse")
@@ -198,6 +202,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
             radius_epsilon: Max temporal radius perturbation magnitude
             curvature_min: Minimum curvature value
             curvature_max: Maximum curvature value
+            num_heads: Number of attention heads (for HGAT encoder)
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -227,6 +232,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.radius_max = radius_max
         self.curvature_min = curvature_min
         self.curvature_max = curvature_max
+        self.num_heads = num_heads
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
@@ -287,12 +293,40 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.loss_e = nn.CrossEntropyLoss()
         
         # ============ Hyperbolic RGCN ============
-        self.rgcn = HyperbolicRGCNCell(
-            num_ents, h_dim, h_dim, num_rels * 2, num_bases,
-            num_hidden_layers, dropout, c=c, self_loop=self_loop,
-            skip_connect=skip_connect, encoder_name=encoder_name,
-            rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
-        )
+        if encoder_name == "hyperbolic_uvrgcn":
+            self.rgcn = HyperbolicRGCNCell(
+                num_ents, h_dim, h_dim, num_rels * 2, num_bases,
+                num_hidden_layers, dropout, c=c, self_loop=self_loop,
+                skip_connect=skip_connect, encoder_name=encoder_name,
+                rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
+            )
+        elif encoder_name == "fhnn":
+            self.rgcn = FHNNCell(
+                num_ents, h_dim, h_dim, num_rels * 2, num_bases,
+                num_hidden_layers, dropout, c=c, self_loop=self_loop,
+                skip_connect=skip_connect, encoder_name=encoder_name,
+                rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
+            )
+        elif encoder_name == "lgcn":
+            self.rgcn = LorentzRGCNCell(
+                num_ents, h_dim, h_dim, num_rels * 2, num_bases,
+                num_hidden_layers, dropout, c=c, self_loop=self_loop,
+                skip_connect=skip_connect, encoder_name=encoder_name,
+                rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
+            )
+        elif encoder_name == "hgat":
+            self.rgcn = HGATCell(
+                num_ents, h_dim, h_dim, num_rels * 2, num_bases,
+                num_hidden_layers, dropout, c=c, self_loop=self_loop,
+                skip_connect=skip_connect, encoder_name=encoder_name,
+                num_heads=num_heads, rel_emb=self.emb_rel,
+                use_cuda=use_cuda, analysis=analysis
+            )
+        else:
+            raise NotImplementedError(
+                f"Encoder '{encoder_name}' not implemented. "
+                f"Choose from: hyperbolic_uvrgcn, fhnn, lgcn, hgat"
+            )
         
         # ============ Time Gate (RE-GCN style, for entity evolution) ============
         # RE-GCN: time_weight = sigmoid(mm(self.h, self.time_gate_weight) + self.time_gate_bias)
@@ -326,6 +360,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
         logger.info(f"  - Hidden dim: {h_dim}, Layers: {num_hidden_layers}")
         logger.info(f"  - Curvature: {c}, Learnable: {learn_curvature}")
         logger.info(f"  - Use residual evolution: {use_residual_evolution}")
+        logger.info(f"  - Encoder: {encoder_name}, Decoder: {decoder_name}")
+        if encoder_name == "hgat":
+            logger.info(f"  - Attention heads: {num_heads}")
 
         if radius_target is None:
             target = torch.full((num_ents,), 0.5 * (radius_min + radius_max))
