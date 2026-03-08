@@ -168,7 +168,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  radius_target=None, radius_lambda=0.02,
                  radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
                  curvature_min=1e-4, curvature_max=1e-1,
-                 num_heads=4):
+                 num_heads=4,
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse" | "murp" | "roth" | "atth")
@@ -209,6 +210,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             curvature_min: Minimum curvature value
             curvature_max: Maximum curvature value
             num_heads: Number of attention heads (for HGAT encoder)
+            query_chunk_size: Query chunk size for dual-dimension chunked scoring (default 128)
+            candidate_chunk_size: Candidate chunk size for dual-dimension chunked scoring (default 256)
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -239,6 +242,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.curvature_min = curvature_min
         self.curvature_max = curvature_max
         self.num_heads = num_heads
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
@@ -361,31 +366,43 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # MuRP 风格：对角 Möbius 旋转 + 双曲距离
             self.decoder_ob = HyperbolicMuRP(
                 num_ents, num_rels * 2, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
             self.rdecoder = HyperbolicMuRPRel(
                 num_rels, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
         elif decoder_name == "roth":
             # RotH 风格：Givens 旋转 + 双曲距离（推荐）
             self.decoder_ob = HyperbolicRotH(
                 num_ents, num_rels * 2, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
             self.rdecoder = HyperbolicRotHRel(
                 num_rels, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
         elif decoder_name == "atth":
             # AttH 风格：注意力加权旋转+反射 + 双曲距离
             self.decoder_ob = HyperbolicAttH(
                 num_ents, num_rels * 2, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
             self.rdecoder = HyperbolicAttHRel(
                 num_rels, h_dim, c=c,
-                dropout=input_dropout
+                dropout=input_dropout,
+                query_chunk_size=query_chunk_size,
+                candidate_chunk_size=candidate_chunk_size,
             )
         else:
             raise NotImplementedError(
