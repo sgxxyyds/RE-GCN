@@ -20,7 +20,7 @@ from collections import defaultdict
 
 def sort_and_rank(score, target):
     _, indices = torch.sort(score, dim=1, descending=True)
-    indices = torch.nonzero(indices == target.view(-1, 1))
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)
     indices = indices[:, 1].view(-1)
     return indices
 
@@ -28,7 +28,7 @@ def sort_and_rank(score, target):
 #TODO filer by groud truth in the same time snapshot not all ground truth
 def sort_and_rank_time_filter(batch_a, batch_r, score, target, total_triplets):
     _, indices = torch.sort(score, dim=1, descending=True)
-    indices = torch.nonzero(indices == target.view(-1, 1))
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)
     for i in range(len(batch_a)):
         ground = indices[i]
     indices = indices[:, 1].view(-1)
@@ -43,7 +43,7 @@ def sort_and_rank_filter(batch_a, batch_r, score, target, all_ans):
         score[i][b_multi] = 0
         score[i][ans] = ground
     _, indices = torch.sort(score, dim=1, descending=True)  # indices : [B, number entity]
-    indices = torch.nonzero(indices == target.view(-1, 1))  # indices : [B, 2] 第一列递增， 第二列表示对应的答案实体id在每一行的位置
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)  # indices : [B, 2] 第一列递增， 第二列表示对应的答案实体id在每一行的位置
     indices = indices[:, 1].view(-1)
     return indices
 
@@ -109,7 +109,7 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     """
     def comp_deg_norm(g):
         in_deg = g.in_degrees(range(g.number_of_nodes())).float()
-        in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
+        in_deg[torch.nonzero(in_deg == 0, as_tuple=False).view(-1)] = 1
         norm = 1.0 / in_deg
         return norm
 
@@ -117,9 +117,7 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))
     rel = np.concatenate((rel, rel + num_rels))
 
-    g = dgl.DGLGraph()
-    g.add_nodes(num_nodes)
-    g.add_edges(src, dst)
+    g = dgl.graph((src, dst), num_nodes=num_nodes)
     norm = comp_deg_norm(g)
     node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
     g.ndata.update({'id': node_id, 'norm': norm.view(-1, 1)})

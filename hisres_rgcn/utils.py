@@ -15,7 +15,7 @@ from collections import defaultdict
 
 def sort_and_rank(score, target):
     _, indices = torch.sort(score, dim=1, descending=True)
-    indices = torch.nonzero(indices == target.view(-1, 1))
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)
     indices = indices[:, 1].view(-1)
     return indices
 
@@ -23,7 +23,7 @@ def sort_and_rank(score, target):
 #TODO filer by groud truth in the same time snapshot not all ground truth
 def sort_and_rank_time_filter(batch_a, batch_r, score, target, total_triplets):
     _, indices = torch.sort(score, dim=1, descending=True)
-    indices = torch.nonzero(indices == target.view(-1, 1))
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)
     for i in range(len(batch_a)):
         ground = indices[i]
     indices = indices[:, 1].view(-1)
@@ -38,7 +38,7 @@ def sort_and_rank_filter(batch_a, batch_r, score, target, all_ans):
         score[i][b_multi] = 0
         score[i][ans] = ground
     _, indices = torch.sort(score, dim=1, descending=True)
-    indices = torch.nonzero(indices == target.view(-1, 1))
+    indices = torch.nonzero(indices == target.view(-1, 1), as_tuple=False)
     indices = indices[:, 1].view(-1)
     return indices
 
@@ -91,7 +91,7 @@ def r2e(triplets, num_rels):
 def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     def comp_deg_norm(g):
         in_deg = g.in_degrees(range(g.number_of_nodes())).float()
-        in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
+        in_deg[torch.nonzero(in_deg == 0, as_tuple=False).view(-1)] = 1
         norm = 1.0 / in_deg
         return norm
     # print(triples.shape)
@@ -100,9 +100,7 @@ def build_sub_graph(num_nodes, num_rels, triples, use_cuda, gpu):
     src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))
     rel = np.concatenate((rel, rel + num_rels))
 
-    g = dgl.DGLGraph()
-    g.add_nodes(num_nodes)
-    g.add_edges(src, dst)
+    g = dgl.graph((src, dst), num_nodes=num_nodes)
     norm = comp_deg_norm(g)
     node_id = torch.arange(0, num_nodes, dtype=torch.long).view(-1, 1)
     g.ndata.update({'id': node_id, 'norm': norm.view(-1, 1)})
@@ -410,7 +408,7 @@ def soft_max(z):
 def build_time_graph(timestamps, r_types, r_num, period):
     def comp_deg_norm(g):
         in_deg = g.in_degrees(range(g.number_of_nodes())).float()
-        in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
+        in_deg[torch.nonzero(in_deg == 0, as_tuple=False).view(-1)] = 1
         norm = 1.0 / in_deg
         return norm
     t_id = torch.arange(0, timestamps, dtype=torch.long).view(-1, 1)
@@ -418,8 +416,6 @@ def build_time_graph(timestamps, r_types, r_num, period):
     # r2 = r_types[1]
     # period1 = period[0]
     # period2 = period[1]
-    g = dgl.DGLGraph()
-    g.add_nodes(timestamps)
     src = []
     dst = []
     rel = []
@@ -441,7 +437,7 @@ def build_time_graph(timestamps, r_types, r_num, period):
     rel = np.array(rel)
     src, dst = np.concatenate((src, dst)), np.concatenate((dst, src))
     rel = np.concatenate((rel, rel + r_num))
-    g.add_edges(src, dst)
+    g = dgl.graph((src, dst), num_nodes=timestamps)
     norm = comp_deg_norm(g)
     g.ndata.update({'id': t_id, 'norm': norm.view(-1, 1)})
     g.edata['type'] = torch.LongTensor(rel)
@@ -486,7 +482,7 @@ def build_time_graph(timestamps, r_types, r_num, period):
 #     return
 def comp_deg_norm(g):
     in_deg = g.in_degrees(range(g.number_of_nodes())).float()
-    in_deg[torch.nonzero(in_deg == 0).view(-1)] = 1
+    in_deg[torch.nonzero(in_deg == 0, as_tuple=False).view(-1)] = 1
     norm = 1.0 / in_deg
     return norm
 
@@ -533,41 +529,40 @@ def build_his_graph(num_nodes, num_rels, total_triples, voc, gpu, inv=False):
     rng = torch.Generator().manual_seed(1234)
     total_indices = torch.randperm(num_queries, generator=rng)
     # graph_list = []
-    graph = dgl.DGLGraph().to(gpu)
-    graph.add_nodes(num_nodes)
     # src = []
     # dst = []
+    all_src = []
+    all_dst = []
     edge = torch.LongTensor([]).to(gpu)
     t = torch.LongTensor([]).to(gpu)
     # assgin = True
     for i in range(0, num_queries):
-        obj = torch.nonzero(voc[i, :]).squeeze()
+        obj = torch.nonzero(voc[i, :], as_tuple=False).squeeze()
         if obj.numel() != 0:
             if obj.dim() == 0:
                 obj = obj.view(1)
             sub = torch.repeat_interleave(total_sub[i], len(obj))
             rel = torch.repeat_interleave(total_rel[i], len(obj))
             # time = torch.repeat_interleave(time_id[i], len(obj))
-            graph.add_edges(sub, obj)
+            all_src.append(sub)
+            all_dst.append(obj)
             edge = torch.cat([edge, rel], dim=0)
-            graph.add_edges(obj, sub)
+            all_src.append(obj)
+            all_dst.append(sub)
             if inv:
                 edge = torch.cat([edge, rel-num_rels], dim=0)
             else:
                 edge = torch.cat([edge, rel+num_rels], dim=0)
             # t = torch.cat([t, time], dim=0)
-            # graph = dgl.graph(
-            #     (sub, obj),
-            #     num_nodes=num_nodes,
-            # )
-            # src = np.concatenate(src, sub)
-            # print(src)
-            # edge = np.concatenate(edge, rel)
-            # dst = np.concatenate(dst, obj)
-            # t = np.concatenate(t, time)
-            # graph_list.append(graph)
         else:
             continue
+    if all_src:
+        graph_src = torch.cat(all_src, dim=0)
+        graph_dst = torch.cat(all_dst, dim=0)
+        graph = dgl.graph((graph_src, graph_dst), num_nodes=num_nodes).to(gpu)
+    else:
+        empty = torch.tensor([], dtype=torch.long).to(gpu)
+        graph = dgl.graph((empty, empty), num_nodes=num_nodes).to(gpu)
     #* k
     # for indices in torch.tensor_split(total_indices, num_partitions):
     #     topk_obj = total_topk_obj[indices]
