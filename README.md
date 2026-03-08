@@ -22,7 +22,7 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 [ Hyperbolic GRU (Temporal Smoothing) ]
         │
         ▼
-[ Decoder for TKGC ]
+[ 双曲解码器 (Hyperbolic Decoder for TKGC) ]
 ```
 
 ## 关键改进
@@ -30,7 +30,7 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 ### 1. 双曲实体嵌入
 - 使用 **庞加莱球模型** 表示实体
 - 半径表示语义抽象层级（半径越大 = 概念越具体）
-- 曲率参数 `c = 0.01`（为稳定性固定）
+- 曲率参数 `c = 0.01`（为稳定性固定，或通过 `--learn-curvature` 学习）
 
 ### 2. 半径语义显式化
 - 使用结构统计构造静态半径目标
@@ -49,23 +49,81 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 - 在时序演化中保持层次结构
 - 将结构传播（GCN）与时间记忆（GRU）分离
 
-### 5. 欧式解码器
-- 在切空间中使用 ConvTransE/DistMult 进行稳定打分
-- 评分函数：`f(s,r,o,t) = <log_0(h_s), R_r, log_0(h_o)>`
+### 5. 双曲解码器优化（v3 新增）
+
+原有基线解码器将实体嵌入映射到切空间（欧式空间）后打分，等价于对 `arctanh` 变换后的欧式向量跑 ConvTransE，
+双曲空间的层级几何优势在解码阶段完全丢失。
+
+本次优化实现了三种**真双曲解码器**，所有打分操作均在 Poincaré 球上直接进行：
+
+#### 5.1 MuRP 风格双曲距离解码器（`--decoder murp`）
+
+评分函数：
+
+```
+f(s, r, o) = -d_H²(R_r ⊗_c h_s ⊕_c t_r, h_o) + b_s + b_o
+```
+
+- `R_r ⊗_c h_s`：对角 Möbius 矩阵乘法（关系旋转）
+- `⊕_c`：Möbius 加法（关系平移）
+- `d_H`：Poincaré 球双曲距离
+- 实现简单，适合快速原型验证
+
+#### 5.2 RotH 风格旋转双曲解码器（`--decoder roth`，**推荐**）
+
+评分函数：
+
+```
+f(s, r, o) = -d_H²(Rot_r(h_s) ⊕_c t_r, h_o) + b_s + b_o
+```
+
+- `Rot_r(h_s) = exp_0(G_r · log_0(h_s))`：切空间应用 Givens 旋转后映射回双曲空间
+- `G_r`：分块对角 Givens 旋转矩阵（每对相邻维度一个旋转角）
+- Givens 旋转保持等距性，不破坏双曲度量，且能建模反对称关系
+- 数学完整性与实现复杂度均衡，适合作为默认双曲解码器
+
+```
+G_r = blockdiag[cos θ₁, -sin θ₁;   cos θ₂, -sin θ₂; ...]
+                [sin θ₁,  cos θ₁;   sin θ₂,  cos θ₂; ...]
+```
+
+#### 5.3 AttH 风格注意力双曲解码器（`--decoder atth`）
+
+评分函数：
+
+```
+f(s, r, o) = -d_H²(h_r(s) ⊕_c t_r, h_o) + b_s + b_o
+h_r(s)    = a_r · Rot_r(h_s) + (1 - a_r) · Ref_r(h_s)
+a_r       = σ(w_r^T · concat(log_0(h_s), rel_emb_r))
+```
+
+- 通过注意力机制在**旋转**与**反射**之间自适应插值
+- 旋转（Rot）可建模反对称关系，反射（Ref）可建模对称关系；注意力门控 a_r 决定每个关系的变换偏好
+- 表达能力最强，适合复杂关系结构和精度要求高的场景
+
+#### 解码器对比
+
+| 解码器 | 数学完整性 | 实现复杂度 | 适用场景 |
+|--------|-----------|-----------|---------|
+| `hyperbolic_convtranse`（基线） | ★★☆☆☆（切空间欧式） | 低 | 基线对照 |
+| `murp` | ★★★☆☆（对角旋转） | 低 | 快速原型验证 |
+| `roth`（**推荐**） | ★★★★☆（Givens 旋转） | 中 | 默认双曲解码器 |
+| `atth` | ★★★★★（旋转+反射+注意力） | 较高 | 高精度研究 |
 
 ## 项目结构
 
 ```
-├── hyperbolic_src/           # Hyperbolic Temporal RE-GCN (NEW)
-│   ├── hyperbolic_ops.py     # Poincaré ball operations
-│   ├── hyperbolic_layers.py  # Hyperbolic RGCN layers
-│   ├── hyperbolic_gru.py     # Hyperbolic GRU modules
-│   ├── hyperbolic_decoder.py # Decoders for TKGC
-│   ├── hyperbolic_model.py   # Main model
-│   └── hyperbolic_main.py    # Training script
-├── src/                      # Original RE-GCN baseline
-├── data/                     # Dataset directory
-└── models/                   # Model checkpoints
+├── hyperbolic_src/               # Hyperbolic Temporal RE-GCN (NEW)
+│   ├── hyperbolic_ops.py         # Poincaré ball operations
+│   ├── hyperbolic_layers.py      # Hyperbolic RGCN layers
+│   ├── hyperbolic_gru.py         # Hyperbolic GRU modules
+│   ├── hyperbolic_decoder.py     # Decoders (含三种真双曲解码器)
+│   ├── hyperbolic_model.py       # Main model
+│   ├── hyperbolic_main.py        # Training script
+│   └── 模型优化方案.md            # 模型优化设计文档
+├── src/                          # Original RE-GCN baseline
+├── data/                         # Dataset directory
+└── models/                       # Model checkpoints
 ```
 
 ## 快速开始
@@ -86,7 +144,7 @@ cd ./data/<dataset>
 python ent2word.py
 ```
 
-### 训练双曲时序 RE-GCN
+### 训练双曲时序 RE-GCN（基线解码器）
 
 ```bash
 mkdir models
@@ -102,13 +160,70 @@ python hyperbolic_main.py -d ICEWS14s \
     --layer-norm \
     --entity-prediction \
     --relation-prediction \
+    --decoder hyperbolic_convtranse \
     --curvature 0.01 \
     --gpu 0
 ```
 
-后台运行示例：
+### 训练 RotH 双曲解码器（推荐）
+
 ```bash
-nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction --relation-prediction --gpu 0 > train.log 2>&1 &
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --lr 0.001 \
+    --n-layers 2 \
+    --n-hidden 200 \
+    --self-loop \
+    --layer-norm \
+    --entity-prediction \
+    --relation-prediction \
+    --decoder roth \
+    --curvature 0.01 \
+    --gpu 0
+```
+
+### 训练 AttH 双曲解码器（最高表达能力）
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --lr 0.001 \
+    --n-layers 2 \
+    --n-hidden 200 \
+    --self-loop \
+    --layer-norm \
+    --entity-prediction \
+    --relation-prediction \
+    --decoder atth \
+    --curvature 0.01 \
+    --gpu 0
+```
+
+### 训练 MuRP 双曲解码器
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --lr 0.001 \
+    --n-layers 2 \
+    --n-hidden 200 \
+    --self-loop \
+    --layer-norm \
+    --entity-prediction \
+    --relation-prediction \
+    --decoder murp \
+    --curvature 0.01 \
+    --gpu 0
+```
+
+后台运行示例（RotH）：
+```bash
+nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 \
+    --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction \
+    --relation-prediction --decoder roth --gpu 0 > train_roth.log 2>&1 &
 ```
 
 ### 使用静态图训练
@@ -126,6 +241,7 @@ python hyperbolic_main.py -d ICEWS14s \
     --add-static-graph \
     --weight 0.5 \
     --angle 10 \
+    --decoder roth \
     --curvature 0.01 \
     --gpu 0
 ```
@@ -134,15 +250,15 @@ python hyperbolic_main.py -d ICEWS14s \
 
 | 参数 | 说明 | 默认值 |
 |-----------|-------------|---------|
+| `--decoder` | 解码器类型：`hyperbolic_convtranse` / `murp` / `roth` / `atth` | hyperbolic_convtranse |
+| `--encoder` | 编码器类型：`hyperbolic_uvrgcn` / `fhnn` / `lgcn` / `hgat` | hyperbolic_uvrgcn |
 | `--curvature` | 双曲空间曲率 | 0.01 |
-| `--n-hidden` | 隐藏维度 | 200 |
+| `--n-hidden` | 隐藏维度（使用 RotH/AttH 时必须为偶数） | 200 |
 | `--n-layers` | GCN 层数 | 2 |
 | `--train-history-len` | 训练历史长度 | 10 |
 | `--test-history-len` | 测试历史长度 | 20 |
-| `--encoder` | 编码器类型 | hyperbolic_uvrgcn |
-| `--decoder` | 解码器类型 | hyperbolic_convtranse |
 | `--disable-residual` | 关闭时间半径残差演化 | False |
-| `--learn-curvature` | 训练时学习曲率参数（新） | False |
+| `--learn-curvature` | 训练时学习曲率参数 | False |
 | `--radius-alpha` | 半径目标度数权重 | 0.5 |
 | `--radius-beta` | 半径目标频次权重 | 0.5 |
 | `--radius-min` | 静态半径最小值 | 0.5 |
@@ -151,30 +267,33 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--radius-epsilon` | 时间半径扰动上限 | 0.1 |
 | `--curvature-min` | 曲率调度最小值 | 1e-4 |
 | `--curvature-max` | 曲率调度最大值 | 1e-1 |
-| `--curvature-warmup-epochs` | 曲率 warmup 轮数 | 0 |
-| `--verbose` | 启用详细调试日志（新） | False |
+| `--verbose` | 启用详细调试日志 | False |
 | `--log-interval` | 每 N 个 epoch 输出训练摘要 | 1 |
-| `--log-file` | 将日志保存到文件（新） | False |
-| `--run-analysis` | 运行分析模式，记录详细统计信息（新） | False |
+| `--log-file` | 将日志保存到文件 | False |
+| `--run-analysis` | 运行分析模式，记录详细统计信息 | False |
 
-### 优化功能（v2更新）
+### 优化功能（v3 更新）
 
-本模型包含以下架构优化：
+本次更新（v3）在 v2 基础上新增以下架构优化：
 
-1. **时间半径演化的残差连接**：通过可学习的门控机制，在时间演化过程中保持稳定性
-2. **可学习曲率**：可选择在训练过程中学习最优曲率参数
-3. **综合日志系统**：
-   - 嵌入统计（范数、半径分布）
-   - 损失分解（实体/关系/静态）
-   - 梯度统计
-   - 时间门控值
-   - 训练进度和指标
+1. **三种真双曲解码器**：
+   - `murp`：对角 Möbius 旋转 + 双曲距离，实现简单
+   - `roth`（**推荐**）：Givens 旋转 + 双曲距离，等距性保证
+   - `atth`：注意力加权旋转+反射 + 双曲距离，最高表达能力
 
-使用 `--run-analysis --verbose --log-file --log-interval 1` 启用完整的日志记录。
+2. **分块距离计算**：所有真双曲解码器均采用分块计算（chunk_size=512），避免大规模实体集下的显存溢出
 
-v2 版本后台训练示例：
+3. **关系预测双曲化**：
+   - `murp`：基于线性变换 + Möbius 距离的关系预测
+   - `roth`：基于全局 Givens 旋转 + Möbius 差分查询的关系预测
+   - `atth`：基于注意力混合变换 + Möbius 差分查询的关系预测
+
+v3 版本后台训练示例：
 ```bash
-nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction --relation-prediction --curvature 0.01 --run-analysis --verbose --log-file --gpu 0 > train_v2.log 2>&1 &
+nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 \
+    --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction \
+    --relation-prediction --decoder roth --curvature 0.01 --run-analysis \
+    --verbose --log-file --gpu 0 > train_v3_roth.log 2>&1 &
 ```
 
 ### 评估模型
@@ -182,7 +301,7 @@ nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history
 添加 `--test` 标志以评估预训练模型：
 
 ```bash
-# Single-step inference
+# Single-step inference (RotH decoder)
 python hyperbolic_main.py -d ICEWS14s \
     --train-history-len 3 \
     --test-history-len 3 \
@@ -192,6 +311,7 @@ python hyperbolic_main.py -d ICEWS14s \
     --layer-norm \
     --entity-prediction \
     --relation-prediction \
+    --decoder roth \
     --curvature 0.01 \
     --gpu 0 \
     --test
@@ -206,6 +326,7 @@ python hyperbolic_main.py -d ICEWS14s \
     --layer-norm \
     --entity-prediction \
     --relation-prediction \
+    --decoder roth \
     --curvature 0.01 \
     --gpu 0 \
     --test \
@@ -238,11 +359,24 @@ x ⊕_c y = ((1 + 2c<x,y> + c||y||²)x + (1 - c||x||²)y) /
           (1 + 2c<x,y> + c²||x||²||y||²)
 ```
 
+### 双曲距离
+```
+d_H(x, y) = (2/√c) · arctanh(√c · ||(-x) ⊕_c y||)
+```
+
+### Givens 旋转（RotH/AttH 核心）
+```
+对每对相邻维度 (x_{2i}, x_{2i+1})：
+  x'_{2i}   = cos(θ_i) * x_{2i}  - sin(θ_i) * x_{2i+1}
+  x'_{2i+1} = sin(θ_i) * x_{2i}  + cos(θ_i) * x_{2i+1}
+```
+
 ## 创新点
 
 1. **首个双曲空间时序 RE-GCN** - 将双曲几何与时序知识图谱推理结合
 2. **显式的时间语义层级演化** - 使用半径建模概念抽象随时间变化
 3. **几何解耦** - 将结构传播（GCN）与时间记忆（GRU）分离
+4. **真双曲解码器（v3 新增）** - 三种在 Poincaré 球上直接打分的解码器，充分利用双曲几何特性
 
 ## 原始 RE-GCN（基线）
 
@@ -287,5 +421,8 @@ python main.py -d ICEWS14s \
 ## 参考文献
 
 - RE-GCN: Temporal Knowledge Graph Reasoning Based on Evolutional Representation Learning (SIGIR 2021)
+- MuRP: Multi-Relational Poincaré Graph Embeddings (NeurIPS 2019)
+- RotH/AttH: Low-Dimensional Hyperbolic Knowledge Graph Embeddings (ACL 2020)
 - Hyperbolic Neural Networks (NeurIPS 2018)
 - 技术方案文档：`hyperbolic_temporal_re_gcn_技术方案.md`（中文版本，包含详细数学推导与设计理由）
+- 优化方案文档：`hyperbolic_src/模型优化方案.md`（双曲解码器与编码器优化详细说明）
