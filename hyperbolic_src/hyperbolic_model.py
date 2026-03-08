@@ -48,7 +48,13 @@ from hyperbolic_src.hyperbolic_layers import (
 )
 from hyperbolic_src.hyperbolic_decoder import (
     HyperbolicConvTransE,
-    HyperbolicConvTransR
+    HyperbolicConvTransR,
+    HyperbolicMuRP,
+    HyperbolicMuRPRel,
+    HyperbolicRotH,
+    HyperbolicRotHRel,
+    HyperbolicAttH,
+    HyperbolicAttHRel,
 )
 
 
@@ -165,7 +171,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  num_heads=4):
         """
         Args:
-            decoder_name: Name of decoder ("hyperbolic_convtranse")
+            decoder_name: Name of decoder ("hyperbolic_convtranse" | "murp" | "roth" | "atth")
             encoder_name: Name of encoder ("hyperbolic_uvrgcn")
             num_ents: Number of entities
             num_rels: Number of relations
@@ -351,8 +357,41 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 hidden_dropout=hidden_dropout,
                 feature_map_dropout=feat_dropout
             )
+        elif decoder_name == "murp":
+            # MuRP 风格：对角 Möbius 旋转 + 双曲距离
+            self.decoder_ob = HyperbolicMuRP(
+                num_ents, num_rels * 2, h_dim, c=c,
+                dropout=input_dropout
+            )
+            self.rdecoder = HyperbolicMuRPRel(
+                num_rels, h_dim, c=c,
+                dropout=input_dropout
+            )
+        elif decoder_name == "roth":
+            # RotH 风格：Givens 旋转 + 双曲距离（推荐）
+            self.decoder_ob = HyperbolicRotH(
+                num_ents, num_rels * 2, h_dim, c=c,
+                dropout=input_dropout
+            )
+            self.rdecoder = HyperbolicRotHRel(
+                num_rels, h_dim, c=c,
+                dropout=input_dropout
+            )
+        elif decoder_name == "atth":
+            # AttH 风格：注意力加权旋转+反射 + 双曲距离
+            self.decoder_ob = HyperbolicAttH(
+                num_ents, num_rels * 2, h_dim, c=c,
+                dropout=input_dropout
+            )
+            self.rdecoder = HyperbolicAttHRel(
+                num_rels, h_dim, c=c,
+                dropout=input_dropout
+            )
         else:
-            raise NotImplementedError(f"Decoder {decoder_name} not implemented")
+            raise NotImplementedError(
+                f"Decoder '{decoder_name}' not implemented. "
+                f"Choose from: hyperbolic_convtranse, murp, roth, atth"
+            )
         
         # Log model architecture summary
         logger.info(f"Hyperbolic Recurrent RGCN initialized:")
