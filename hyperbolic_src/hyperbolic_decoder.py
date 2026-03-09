@@ -81,6 +81,76 @@ def _chunked_hyperbolic_dist_score(query, candidates, bias, c, q_chunk_size, c_c
     return scores
 
 
+def _chunked_hyperbolic_ce_loss(
+    query,
+    candidates,
+    target,
+    c,
+    c_chunk_size,
+    candidate_bias=None,
+    query_bias=None,
+):
+    """
+    流式分块双曲距离交叉熵损失（训练专用）。
+
+    核心原理：对于 Cross Entropy，
+        CE(logits, y) = -logits[y] + logsumexp(logits)
+    可在 candidate 分块循环中流式计算，无需构造完整 [B, N] logits 矩阵。
+
+    注意：query_bias 参数接受但不实际应用，因为它在 CE 中完全抵消
+    （对所有 candidate 加相同偏置不影响 CE 结果）。
+
+    Args:
+        query:          查询向量（双曲空间），形状 (B, d)
+        candidates:     候选向量（双曲空间），形状 (N, d)
+        target:         目标索引，形状 (B,)
+        c:              双曲空间曲率
+        c_chunk_size:   candidate 分块大小
+        candidate_bias: 每个 candidate 的偏置，形状 (N,)；若为 None 则不加
+        query_bias:     每个 query 的偏置，形状 (B,)；该值在 CE 中抵消，接受但不使用
+
+    Returns:
+        标量 loss，等价于 F.cross_entropy(full_logits, target)
+    """
+    B, d = query.shape[0], query.shape[1]
+    N = candidates.shape[0]
+
+    # 初始化：target_logit 用于记录目标类得分，lse 用于流式 logsumexp 累积
+    target_logits = query.new_zeros(B)
+    lse = query.new_full((B,), float('-inf'))
+
+    for c_start in range(0, N, c_chunk_size):
+        c_end = min(c_start + c_chunk_size, N)
+        c_chunk = candidates[c_start:c_end]  # (Cq, d)
+        Cq = c_end - c_start
+
+        # 计算当前 chunk 的双曲距离得分
+        q_exp = query.unsqueeze(1).expand(B, Cq, d).reshape(B * Cq, d)
+        c_exp = c_chunk.unsqueeze(0).expand(B, Cq, d).reshape(B * Cq, d)
+        diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)       # (B*Cq, d)
+        dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, Cq)   # (B, Cq)
+        logits_chunk = -dist_sq                                   # (B, Cq)
+        del q_exp, c_exp, diff, dist_sq
+
+        if candidate_bias is not None:
+            logits_chunk = logits_chunk + candidate_bias[c_start:c_end].unsqueeze(0)
+
+        # 更新目标类得分（仅对目标在当前 chunk 范围内的样本）
+        in_chunk = (target >= c_start) & (target < c_end)  # (B,)
+        if in_chunk.any():
+            local_idx = (target - c_start).clamp(min=0)   # (B,)，越界样本 clamp 至 0 后被 mask
+            target_logits[in_chunk] = logits_chunk[in_chunk, local_idx[in_chunk]]
+
+        # 流式合并 logsumexp：logsumexp(a, b) = max(a,b) + log(exp(a-max)+exp(b-max))
+        chunk_lse = torch.logsumexp(logits_chunk, dim=1)   # (B,)
+        del logits_chunk
+        m = torch.max(lse, chunk_lse)
+        lse = m + torch.log(torch.exp(lse - m) + torch.exp(chunk_lse - m))
+        del chunk_lse, m
+
+    return (-target_logits + lse).mean()
+
+
 class HyperbolicConvTransE(nn.Module):
     """
     ConvTransE-style decoder operating on tangent space embeddings.
@@ -503,6 +573,35 @@ class HyperbolicMuRP(nn.Module):
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算 cross entropy，避免构造完整 [B, N] logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（接口一致性保留，未使用）
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        s_emb = entity_embedding[triplets[:, 0]]
+        r_idx = triplets[:, 1]
+
+        rot = self.rel_diag[r_idx]
+        s_tangent = HyperbolicOps.log_map_zero(s_emb, self.c)
+        s_tangent = self.dropout(s_tangent)
+        rot_s_tangent = rot * s_tangent
+        rot_s = HyperbolicOps.exp_map_zero(rot_s_tangent, self.c)
+
+        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, entity_embedding, triplets[:, 2], self.c,
+            self.candidate_chunk_size, candidate_bias=self.entity_bias,
+        )
+
 
 class HyperbolicMuRPRel(nn.Module):
     """
@@ -580,6 +679,38 @@ class HyperbolicMuRPRel(nn.Module):
             self.c, self.query_chunk_size, self.candidate_chunk_size
         )                                                             # (B, R)
         return scores
+
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算关系预测 cross entropy，避免构造完整 logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（切空间），形状 (num_rels * 2, d)
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        s_emb = entity_embedding[triplets[:, 0]]
+        o_emb = entity_embedding[triplets[:, 2]]
+
+        s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
+        o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
+        s_tan = self.dropout(s_tan)
+        o_tan = self.dropout(o_tan)
+        s_trans = torch.mm(s_tan, self.W_s)
+        o_trans = torch.mm(o_tan, self.W_o)
+
+        query_tan = s_trans + o_trans
+        query = HyperbolicOps.exp_map_zero(query_tan, self.c)
+
+        rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, rel_hyp, triplets[:, 1], self.c,
+            self.candidate_chunk_size, candidate_bias=self.rel_bias,
+        )
 
 
 class HyperbolicRotH(nn.Module):
@@ -691,6 +822,35 @@ class HyperbolicRotH(nn.Module):
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算 cross entropy，避免构造完整 [B, N] logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（接口一致性保留，未使用）
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        r_idx = triplets[:, 1]
+        s_emb = entity_embedding[triplets[:, 0]]
+
+        s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
+        s_tan = self.dropout(s_tan)
+        r_angles = self.rel_rot[r_idx]
+        rot_s_tan = self.givens_rotation(s_tan, r_angles)
+        rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)
+
+        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, entity_embedding, triplets[:, 2], self.c,
+            self.candidate_chunk_size, candidate_bias=self.entity_bias,
+        )
+
 
 class HyperbolicRotHRel(nn.Module):
     """
@@ -780,6 +940,35 @@ class HyperbolicRotHRel(nn.Module):
             self.c, self.query_chunk_size, self.candidate_chunk_size
         )                                                             # (B, R)
         return scores
+
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算关系预测 cross entropy，避免构造完整 logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（切空间），形状 (num_rels * 2, d)
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        s_emb = entity_embedding[triplets[:, 0]]
+        o_emb = entity_embedding[triplets[:, 2]]
+
+        s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
+        s_tan = self.dropout(s_tan)
+        rot_s_tan = self.givens_rotation(s_tan, self.global_rot)
+        rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)
+
+        query = HyperbolicOps.mobius_add(-rot_s, o_emb, self.c)
+
+        rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, rel_hyp, triplets[:, 1], self.c,
+            self.candidate_chunk_size, candidate_bias=self.rel_bias,
+        )
 
 
 class HyperbolicAttH(nn.Module):
@@ -914,6 +1103,46 @@ class HyperbolicAttH(nn.Module):
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算 cross entropy，避免构造完整 [B, N] logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（切空间），形状 (num_relations, d)
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        r_idx = triplets[:, 1]
+        s_emb = entity_embedding[triplets[:, 0]]
+
+        s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
+        s_tan = self.dropout(s_tan)
+
+        r_rot = self.rel_rot[r_idx]
+        r_ref = self.rel_ref[r_idx]
+        rot_s = self.givens_rotation(s_tan, r_rot)
+        ref_s = self.givens_reflection(s_tan, r_ref)
+
+        rel_emb_r = rel_embedding[r_idx]
+        attn_input = torch.cat([s_tan, rel_emb_r], dim=-1)
+        a_r = torch.sigmoid(
+            torch.sum(self.attn_weight[r_idx] * attn_input, dim=-1, keepdim=True)
+        )
+
+        mixed_tan = a_r * rot_s + (1.0 - a_r) * ref_s
+        mixed_hyp = HyperbolicOps.exp_map_zero(mixed_tan, self.c)
+
+        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, entity_embedding, triplets[:, 2], self.c,
+            self.candidate_chunk_size, candidate_bias=self.entity_bias,
+        )
+
 
 class HyperbolicAttHRel(nn.Module):
     """
@@ -1032,3 +1261,40 @@ class HyperbolicAttHRel(nn.Module):
             self.c, self.query_chunk_size, self.candidate_chunk_size
         )                                                             # (B, R)
         return scores
+
+    def loss(self, entity_embedding, rel_embedding, triplets):
+        """
+        训练专用：流式分块计算关系预测 cross entropy，避免构造完整 logits 矩阵。
+
+        Args:
+            entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
+            rel_embedding: 关系嵌入（切空间），形状 (num_rels * 2, d)
+            triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
+
+        Returns:
+            标量 CE 损失
+        """
+        s_emb = entity_embedding[triplets[:, 0]]
+        o_emb = entity_embedding[triplets[:, 2]]
+
+        s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
+        o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
+        s_tan = self.dropout(s_tan)
+
+        rot_s = self.givens_rotation(s_tan, self.global_rot)
+        ref_s = self.givens_reflection(s_tan, self.global_ref)
+
+        attn_input = torch.cat([s_tan, o_tan], dim=-1)
+        a = torch.sigmoid(torch.mv(attn_input, self.attn_weight)).unsqueeze(1)
+
+        mixed_tan = a * rot_s + (1.0 - a) * ref_s
+        mixed_hyp = HyperbolicOps.exp_map_zero(mixed_tan, self.c)
+
+        query = HyperbolicOps.mobius_add(-mixed_hyp, o_emb, self.c)
+
+        rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)
+
+        return _chunked_hyperbolic_ce_loss(
+            query, rel_hyp, triplets[:, 1], self.c,
+            self.candidate_chunk_size, candidate_bias=self.rel_bias,
+        )

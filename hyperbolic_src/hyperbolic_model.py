@@ -688,10 +688,11 @@ class HyperbolicRecurrentRGCN(nn.Module):
         else:
             c_val = c
         
-        loss_ent = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
-        loss_rel = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
-        loss_static = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
-        loss_radius = torch.zeros(1, requires_grad=True).cuda().to(self.gpu) if use_cuda else torch.zeros(1, requires_grad=True)
+        device = triples.device
+        loss_ent = torch.zeros(1, device=device)
+        loss_rel = torch.zeros(1, device=device)
+        loss_static = torch.zeros(1, device=device)
+        loss_radius = torch.zeros(1, device=device)
         
         # Create inverse triplets
         inverse_triples = triples[:, [2, 1, 0]]
@@ -711,13 +712,19 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         # Entity prediction loss
         if self.entity_prediction:
-            scores_ob = self.decoder_ob.forward(pre_emb, r_emb, all_triples).view(-1, self.num_ents)
-            loss_ent += self.loss_e(scores_ob, all_triples[:, 2])
+            if hasattr(self.decoder_ob, 'loss'):
+                loss_ent = self.decoder_ob.loss(pre_emb, r_emb, all_triples)
+            else:
+                scores_ob = self.decoder_ob.forward(pre_emb, r_emb, all_triples).view(-1, self.num_ents)
+                loss_ent = self.loss_e(scores_ob, all_triples[:, 2])
         
         # Relation prediction loss
         if self.relation_prediction:
-            score_rel = self.rdecoder.forward(pre_emb, r_emb, all_triples, mode="train").view(-1, 2 * self.num_rels)
-            loss_rel += self.loss_r(score_rel, all_triples[:, 1])
+            if hasattr(self.rdecoder, 'loss'):
+                loss_rel = self.rdecoder.loss(pre_emb, r_emb, all_triples)
+            else:
+                score_rel = self.rdecoder.forward(pre_emb, r_emb, all_triples, mode="train").view(-1, 2 * self.num_rels)
+                loss_rel = self.loss_r(score_rel, all_triples[:, 1])
         
         # Static constraint loss (Euclidean space)
         if self.use_static and static_emb is not None:

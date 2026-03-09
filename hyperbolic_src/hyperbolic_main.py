@@ -447,6 +447,7 @@ def run_experiment(args):
                     logger.debug(f"Radius loss: {loss_radius.item():.4f}")
                 
                 # Backprop
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 
                 # Log gradient statistics if in analysis mode
@@ -455,7 +456,6 @@ def run_experiment(args):
                 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
                 optimizer.step()
-                optimizer.zero_grad()
             
             # Calculate epoch time
             epoch_time = time.time() - epoch_start_time
