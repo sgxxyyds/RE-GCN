@@ -427,28 +427,63 @@ def run_experiment(args):
                 history_glist = [build_sub_graph(num_nodes, num_rels, snap, use_cuda, args.gpu)
                                 for snap in input_list]
                 
-                # Prepare output
-                output = [torch.from_numpy(_).long() for _ in output]
+                # Prepare output triples for the current snapshot
+                snapshot_triples = torch.from_numpy(output[0]).long()
                 if use_cuda:
-                    output = [o.cuda() for o in output]
+                    snapshot_triples = snapshot_triples.cuda()
                 
-                # Compute loss
-                loss_e, loss_r, loss_static, loss_radius = model.get_loss(
-                    history_glist, output[0], static_graph, use_cuda
-                )
-                loss = args.task_weight * loss_e + (1 - args.task_weight) * loss_r + loss_static + loss_radius
+                # Skip empty snapshots
+                if snapshot_triples.shape[0] == 0:
+                    continue
                 
-                losses.append(loss.item())
-                losses_e.append(loss_e.item())
-                losses_r.append(loss_r.item())
-                losses_static.append(loss_static.item())
-                losses_radius.append(loss_radius.item())
-                if args.run_analysis:
-                    logger.debug(f"Radius loss: {loss_radius.item():.4f}")
+                # Split snapshot triples into mini-batches to reduce peak GPU memory.
+                # Gradients accumulate across all mini-batches; optimizer steps once per snapshot.
+                triple_batch_size = args.triple_batch_size
+                num_triples = snapshot_triples.shape[0]
                 
-                # Backprop
+                snapshot_loss_e = 0.0
+                snapshot_loss_r = 0.0
+                snapshot_loss_static = 0.0
+                snapshot_loss_radius = 0.0
+                num_batches = 0
+                
                 optimizer.zero_grad()
-                loss.backward()
+                
+                for batch_start in range(0, num_triples, triple_batch_size):
+                    batch_end = min(batch_start + triple_batch_size, num_triples)
+                    mini_batch = snapshot_triples[batch_start:batch_end]
+                    
+                    # Compute loss for this mini-batch
+                    loss_e, loss_r, loss_static, loss_radius = model.get_loss(
+                        history_glist, mini_batch, static_graph, use_cuda
+                    )
+                    loss = args.task_weight * loss_e + (1 - args.task_weight) * loss_r + loss_static + loss_radius
+                    
+                    # Backward for this mini-batch (gradients accumulate)
+                    loss.backward()
+                    
+                    snapshot_loss_e += loss_e.item()
+                    snapshot_loss_r += loss_r.item()
+                    snapshot_loss_static += loss_static.item()
+                    snapshot_loss_radius += loss_radius.item()
+                    num_batches += 1
+                
+                # Average loss components for logging
+                if num_batches > 0:
+                    avg_loss_e = snapshot_loss_e / num_batches
+                    avg_loss_r = snapshot_loss_r / num_batches
+                    avg_loss_static = snapshot_loss_static / num_batches
+                    avg_loss_radius = snapshot_loss_radius / num_batches
+                    avg_loss = (args.task_weight * avg_loss_e
+                                + (1 - args.task_weight) * avg_loss_r
+                                + avg_loss_static + avg_loss_radius)
+                    losses.append(avg_loss)
+                    losses_e.append(avg_loss_e)
+                    losses_r.append(avg_loss_r)
+                    losses_static.append(avg_loss_static)
+                    losses_radius.append(avg_loss_radius)
+                    if args.run_analysis:
+                        logger.debug(f"Radius loss: {avg_loss_radius:.4f}")
                 
                 # Log gradient statistics if in analysis mode
                 if args.run_analysis and train_sample_num % 100 == 0:
@@ -583,9 +618,12 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--grad-norm", type=float, default=1.0, help="Gradient clipping norm")
     parser.add_argument("--evaluate-every", type=int, default=1, help="Evaluation frequency")
+    parser.add_argument("--triple-batch-size", type=int, default=64,
+                        help="Mini-batch size for triples within each snapshot during training. "
+                             "Smaller values reduce peak GPU memory usage.")
     
     # Decoder settings
-    parser.add_argument("--decoder", type=str, default="hyperbolic_convtranse", help="Decoder method")
+    parser.add_argument("--decoder", type=str, default="roth", help="Decoder method")
     parser.add_argument("--input-dropout", type=float, default=0.2, help="Input dropout")
     parser.add_argument("--hidden-dropout", type=float, default=0.2, help="Hidden dropout")
     parser.add_argument("--feat-dropout", type=float, default=0.2, help="Feature dropout")

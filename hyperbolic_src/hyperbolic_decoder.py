@@ -89,13 +89,15 @@ def _chunked_hyperbolic_ce_loss(
     c_chunk_size,
     candidate_bias=None,
     query_bias=None,
+    q_chunk_size=None,
 ):
     """
-    流式分块双曲距离交叉熵损失（训练专用）。
+    双重分块双曲距离交叉熵损失（训练专用）。
 
     核心原理：对于 Cross Entropy，
         CE(logits, y) = -logits[y] + logsumexp(logits)
     可在 candidate 分块循环中流式计算，无需构造完整 [B, N] logits 矩阵。
+    同时对 query 维度分块，当 q_chunk_size < B 时将峰值张量规模从 B×Cq×d 降低到 Bq×Cq×d。
 
     注意：query_bias 参数接受但不实际应用，因为它在 CE 中完全抵消
     （对所有 candidate 加相同偏置不影响 CE 结果）。
@@ -108,6 +110,7 @@ def _chunked_hyperbolic_ce_loss(
         c_chunk_size:   candidate 分块大小
         candidate_bias: 每个 candidate 的偏置，形状 (N,)；若为 None 则不加
         query_bias:     每个 query 的偏置，形状 (B,)；该值在 CE 中抵消，接受但不使用
+        q_chunk_size:   query 分块大小；若为 None 则不对 query 维度分块
 
     Returns:
         标量 loss，等价于 F.cross_entropy(full_logits, target)
@@ -115,40 +118,60 @@ def _chunked_hyperbolic_ce_loss(
     B, d = query.shape[0], query.shape[1]
     N = candidates.shape[0]
 
-    # 初始化：target_logit 用于记录目标类得分，lse 用于流式 logsumexp 累积
-    target_logits = query.new_zeros(B)
-    lse = query.new_full((B,), float('-inf'))
+    # 若未指定 query 分块大小，则一次处理全部 query（保持原有行为）
+    if q_chunk_size is None or q_chunk_size >= B:
+        q_chunk_size = B
 
-    for c_start in range(0, N, c_chunk_size):
-        c_end = min(c_start + c_chunk_size, N)
-        c_chunk = candidates[c_start:c_end]  # (Cq, d)
-        Cq = c_end - c_start
+    # 外层：query 分块；内层：candidate 分块
+    # 各 query chunk 独立维护 target_logit 与流式 logsumexp
+    loss_sum = query.new_zeros(())
+    total_queries = 0
 
-        # 计算当前 chunk 的双曲距离得分
-        q_exp = query.unsqueeze(1).expand(B, Cq, d).reshape(B * Cq, d)
-        c_exp = c_chunk.unsqueeze(0).expand(B, Cq, d).reshape(B * Cq, d)
-        diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)       # (B*Cq, d)
-        dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, Cq)   # (B, Cq)
-        logits_chunk = -dist_sq                                   # (B, Cq)
-        del q_exp, c_exp, diff, dist_sq
+    for q_start in range(0, B, q_chunk_size):
+        q_end = min(q_start + q_chunk_size, B)
+        Bq = q_end - q_start
 
-        if candidate_bias is not None:
-            logits_chunk = logits_chunk + candidate_bias[c_start:c_end].unsqueeze(0)
+        q_chunk = query[q_start:q_end]           # (Bq, d)
+        t_chunk = target[q_start:q_end]           # (Bq,)
 
-        # 更新目标类得分（仅对目标在当前 chunk 范围内的样本）
-        in_chunk = (target >= c_start) & (target < c_end)  # (B,)
-        if in_chunk.any():
-            local_idx = (target - c_start).clamp(min=0)   # (B,)，越界样本 clamp 至 0 后被 mask
-            target_logits[in_chunk] = logits_chunk[in_chunk, local_idx[in_chunk]]
+        # 初始化当前 query chunk 的累积量
+        target_logits = q_chunk.new_zeros(Bq)
+        lse = q_chunk.new_full((Bq,), float('-inf'))
 
-        # 流式合并 logsumexp：logsumexp(a, b) = max(a,b) + log(exp(a-max)+exp(b-max))
-        chunk_lse = torch.logsumexp(logits_chunk, dim=1)   # (B,)
-        del logits_chunk
-        m = torch.max(lse, chunk_lse)
-        lse = m + torch.log(torch.exp(lse - m) + torch.exp(chunk_lse - m))
-        del chunk_lse, m
+        for c_start in range(0, N, c_chunk_size):
+            c_end = min(c_start + c_chunk_size, N)
+            c_chunk = candidates[c_start:c_end]  # (Cq, d)
+            Cq = c_end - c_start
 
-    return (-target_logits + lse).mean()
+            # 计算当前 query chunk 与 candidate chunk 的双曲距离得分
+            q_exp = q_chunk.unsqueeze(1).expand(Bq, Cq, d).reshape(Bq * Cq, d)
+            c_exp = c_chunk.unsqueeze(0).expand(Bq, Cq, d).reshape(Bq * Cq, d)
+            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)        # (Bq*Cq, d)
+            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)   # (Bq, Cq)
+            logits_chunk = -dist_sq                                    # (Bq, Cq)
+            del q_exp, c_exp, diff, dist_sq
+
+            if candidate_bias is not None:
+                logits_chunk = logits_chunk + candidate_bias[c_start:c_end].unsqueeze(0)
+
+            # 更新目标类得分（仅对目标在当前 candidate chunk 范围内的样本）
+            in_chunk = (t_chunk >= c_start) & (t_chunk < c_end)  # (Bq,)
+            if in_chunk.any():
+                local_idx = (t_chunk - c_start).clamp(min=0)
+                target_logits[in_chunk] = logits_chunk[in_chunk, local_idx[in_chunk]]
+
+            # 流式合并 logsumexp：logsumexp(a, b) = max(a,b) + log(exp(a-max)+exp(b-max))
+            chunk_lse = torch.logsumexp(logits_chunk, dim=1)   # (Bq,)
+            del logits_chunk
+            m = torch.max(lse, chunk_lse)
+            lse = m + torch.log(torch.exp(lse - m) + torch.exp(chunk_lse - m))
+            del chunk_lse, m
+
+        # 累积当前 query chunk 的 loss（sum 形式，最后除以 B 得 mean）
+        loss_sum.add_((-target_logits + lse).sum())
+        total_queries += Bq
+
+    return loss_sum / total_queries
 
 
 class HyperbolicConvTransE(nn.Module):
@@ -600,6 +623,7 @@ class HyperbolicMuRP(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
+            q_chunk_size=self.query_chunk_size,
         )
 
 
@@ -710,6 +734,7 @@ class HyperbolicMuRPRel(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, rel_hyp, triplets[:, 1], self.c,
             self.candidate_chunk_size, candidate_bias=self.rel_bias,
+            q_chunk_size=self.query_chunk_size,
         )
 
 
@@ -849,6 +874,7 @@ class HyperbolicRotH(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
+            q_chunk_size=self.query_chunk_size,
         )
 
 
@@ -968,6 +994,7 @@ class HyperbolicRotHRel(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, rel_hyp, triplets[:, 1], self.c,
             self.candidate_chunk_size, candidate_bias=self.rel_bias,
+            q_chunk_size=self.query_chunk_size,
         )
 
 
@@ -1141,6 +1168,7 @@ class HyperbolicAttH(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
+            q_chunk_size=self.query_chunk_size,
         )
 
 
@@ -1297,4 +1325,5 @@ class HyperbolicAttHRel(nn.Module):
         return _chunked_hyperbolic_ce_loss(
             query, rel_hyp, triplets[:, 1], self.c,
             self.candidate_chunk_size, candidate_bias=self.rel_bias,
+            q_chunk_size=self.query_chunk_size,
         )
