@@ -447,7 +447,7 @@ def run_experiment(args):
                     logger.debug(f"Radius loss: {loss_radius.item():.4f}")
                 
                 # Backprop
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad()
                 loss.backward()
                 
                 # Log gradient statistics if in analysis mode
