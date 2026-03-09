@@ -30,6 +30,57 @@ import math
 from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 
 
+def _chunked_hyperbolic_dist_score(query, candidates, bias, c, q_chunk_size, c_chunk_size):
+    """
+    双维分块双曲距离打分辅助函数。
+
+    将 query（B, d）和 candidates（N, d）分别按 q_chunk_size 与 c_chunk_size 切块，
+    每次只展开 Bq×Cq×d 的中间张量，避免一次性展开 B×N×d 导致 OOM。
+    数学语义与全展开版本完全等价。
+
+    Args:
+        query:          查询向量（双曲空间），形状 (B, d)
+        candidates:     候选向量（双曲空间），形状 (N, d)
+        bias:           每个候选的偏置，形状 (N,)；若为 None 则不加偏置
+        c:              双曲空间曲率
+        q_chunk_size:   query 分块大小（建议保守默认值 128）
+        c_chunk_size:   candidate 分块大小（建议保守默认值 256）
+
+    Returns:
+        得分矩阵，形状 (B, N)
+    """
+    B, d = query.shape[0], query.shape[1]
+    N = candidates.shape[0]
+
+    # 预分配输出张量，避免 cat 的额外内存开销
+    scores = query.new_zeros(B, N)
+
+    for q_start in range(0, B, q_chunk_size):
+        q_end = min(q_start + q_chunk_size, B)
+        q_chunk = query[q_start:q_end]       # (Bq, d)
+        Bq = q_end - q_start
+
+        for c_start in range(0, N, c_chunk_size):
+            c_end = min(c_start + c_chunk_size, N)
+            c_chunk = candidates[c_start:c_end]  # (Cq, d)
+            Cq = c_end - c_start
+
+            # 峰值中间张量从 B×N×d 降至 Bq×Cq×d
+            q_exp = q_chunk.unsqueeze(1).expand(Bq, Cq, d).reshape(Bq * Cq, d)
+            c_exp = c_chunk.unsqueeze(0).expand(Bq, Cq, d).reshape(Bq * Cq, d)
+
+            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)   # (Bq*Cq, d)
+            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)  # (Bq, Cq)
+
+            block = -dist_sq
+            if bias is not None:
+                block = block + bias[c_start:c_end].unsqueeze(0)
+
+            scores[q_start:q_end, c_start:c_end] = block
+
+    return scores
+
+
 class HyperbolicConvTransE(nn.Module):
     """
     ConvTransE-style decoder operating on tangent space embeddings.
@@ -383,7 +434,7 @@ class HyperbolicMuRP(nn.Module):
     """
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 chunk_size=512):
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_entities: 实体数量
@@ -391,16 +442,17 @@ class HyperbolicMuRP(nn.Module):
             embedding_dim: 嵌入维度
             c: 双曲空间曲率
             dropout: Dropout 概率
-            chunk_size: 分块计算大小，用于平衡显存与速度（默认 512）
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicMuRP, self).__init__()
 
         self.num_entities = num_entities
         self.embedding_dim = embedding_dim
         self.c = c
-        # chunk_size 控制与所有实体距离计算时的分块粒度
-        # 较小值节省显存，较大值减少 Python 循环开销；默认 512 在常见 GPU 上性能均衡
-        self.chunk_size = chunk_size
+        # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # 关系对角旋转向量（Möbius 矩阵乘法的对角近似）
         # 初始化范围 [-1, 1] 参考原始 MuRP 实现，使初始旋转幅度适中
@@ -442,23 +494,12 @@ class HyperbolicMuRP(nn.Module):
         t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)             # (B, d)
 
-        # 3. 分块计算与所有候选实体的双曲距离，避免 OOM
-        chunk_size = min(self.chunk_size, self.num_entities)
-        all_scores = []
-        for start in range(0, self.num_entities, chunk_size):
-            end = min(start + chunk_size, self.num_entities)
-            cand = entity_embedding[start:end]                         # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            c_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, self.c)    # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)      # (B, C)
-            chunk_scores = -dist_sq + self.entity_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                         # (B, N)
+        # 3. 双维分块计算与所有候选实体的双曲距离，避免 OOM
+        cand_bias = self.entity_bias                               # (N,)
+        scores = _chunked_hyperbolic_dist_score(
+            query, entity_embedding, cand_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                          # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
@@ -473,21 +514,23 @@ class HyperbolicMuRPRel(nn.Module):
     """
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 chunk_size=512):
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
             embedding_dim: 嵌入维度
             c: 双曲空间曲率
             dropout: Dropout 概率
-            chunk_size: 分块计算大小，用于避免 OOM（默认 512）
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicMuRPRel, self).__init__()
 
         self.num_relations = num_relations
         self.embedding_dim = embedding_dim
         self.c = c
-        self.chunk_size = chunk_size
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # 主语/宾语线性变换权重
         self.W_s = nn.Parameter(torch.Tensor(embedding_dim, embedding_dim))
@@ -531,23 +574,11 @@ class HyperbolicMuRPRel(nn.Module):
         R = rel_embedding.shape[0]
         rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)  # (R, d)
 
-        # 4. 分块计算与所有候选关系的双曲距离，避免 OOM
-        chunk_size = min(self.chunk_size, R)
-        all_scores = []
-        for start in range(0, R, chunk_size):
-            end = min(start + chunk_size, R)
-            cand = rel_hyp[start:end]                                      # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            r_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, r_exp, self.c)        # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)          # (B, C)
-            chunk_scores = -dist_sq + self.rel_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                             # (B, R)
+        # 4. 双维分块计算与所有候选关系的双曲距离，避免 OOM
+        scores = _chunked_hyperbolic_dist_score(
+            query, rel_hyp, self.rel_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                             # (B, R)
         return scores
 
 
@@ -567,7 +598,7 @@ class HyperbolicRotH(nn.Module):
     """
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 chunk_size=512):
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_entities: 实体数量
@@ -575,7 +606,8 @@ class HyperbolicRotH(nn.Module):
             embedding_dim: 嵌入维度（必须为偶数 / must be even for Givens rotation）
             c: 双曲空间曲率
             dropout: Dropout 概率
-            chunk_size: 分块计算大小（默认 512），用于平衡显存与计算效率
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicRotH, self).__init__()
 
@@ -587,9 +619,9 @@ class HyperbolicRotH(nn.Module):
         self.embedding_dim = embedding_dim
         self.half_dim = embedding_dim // 2
         self.c = c
-        # chunk_size 控制与所有实体距离计算时的分块粒度
-        # 较小值节省显存，较大值减少 Python 循环开销；默认 512 在常见 GPU 上性能均衡
-        self.chunk_size = chunk_size
+        # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # Givens 旋转角（每个关系 d/2 个角度）
         self.rel_rot = nn.Parameter(torch.Tensor(num_relations, self.half_dim))
@@ -651,23 +683,11 @@ class HyperbolicRotH(nn.Module):
         t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)              # (B, d)
 
-        # 3. 分块计算与所有候选实体的双曲距离
-        chunk_size = min(self.chunk_size, self.num_entities)
-        all_scores = []
-        for start in range(0, self.num_entities, chunk_size):
-            end = min(start + chunk_size, self.num_entities)
-            cand = entity_embedding[start:end]                           # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            c_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, self.c)      # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)        # (B, C)
-            chunk_scores = -dist_sq + self.entity_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                            # (B, N)
+        # 3. 双维分块计算与所有候选实体的双曲距离
+        scores = _chunked_hyperbolic_dist_score(
+            query, entity_embedding, self.entity_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                            # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
@@ -681,14 +701,15 @@ class HyperbolicRotHRel(nn.Module):
     """
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 chunk_size=512):
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
             embedding_dim: 嵌入维度（必须为偶数）
             c: 双曲空间曲率
             dropout: Dropout 概率
-            chunk_size: 分块计算大小，用于避免 OOM（默认 512）
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicRotHRel, self).__init__()
 
@@ -700,7 +721,8 @@ class HyperbolicRotHRel(nn.Module):
         self.embedding_dim = embedding_dim
         self.half_dim = embedding_dim // 2
         self.c = c
-        self.chunk_size = chunk_size
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # 全局旋转角（对所有 batch 项使用相同的基础旋转方向）
         self.global_rot = nn.Parameter(torch.Tensor(self.half_dim))
@@ -752,23 +774,11 @@ class HyperbolicRotHRel(nn.Module):
         R = rel_embedding.shape[0]  # num_rels * 2
         rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)  # (R, d)
 
-        # 4. 分块计算与所有候选关系的双曲距离，避免 OOM
-        chunk_size = min(self.chunk_size, R)
-        all_scores = []
-        for start in range(0, R, chunk_size):
-            end = min(start + chunk_size, R)
-            cand = rel_hyp[start:end]                                      # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            r_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, r_exp, self.c)        # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)          # (B, C)
-            chunk_scores = -dist_sq + self.rel_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                             # (B, R)
+        # 4. 双维分块计算与所有候选关系的双曲距离，避免 OOM
+        scores = _chunked_hyperbolic_dist_score(
+            query, rel_hyp, self.rel_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                             # (B, R)
         return scores
 
 
@@ -788,7 +798,8 @@ class HyperbolicAttH(nn.Module):
     参考：Chami et al., ACL 2020
     """
 
-    def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0):
+    def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_entities: 实体数量
@@ -796,6 +807,8 @@ class HyperbolicAttH(nn.Module):
             embedding_dim: 嵌入维度（必须为偶数）
             c: 双曲空间曲率
             dropout: Dropout 概率
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicAttH, self).__init__()
 
@@ -806,9 +819,9 @@ class HyperbolicAttH(nn.Module):
         self.embedding_dim = embedding_dim
         self.half_dim = embedding_dim // 2
         self.c = c
-        # chunk_size 控制与所有实体距离计算时的分块粒度
-        # 较小值节省显存，较大值减少 Python 循环开销；默认 512 在常见 GPU 上性能均衡
-        self.chunk_size = 512
+        # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # Givens 旋转角
         self.rel_rot = nn.Parameter(torch.Tensor(num_relations, self.half_dim))
@@ -893,23 +906,11 @@ class HyperbolicAttH(nn.Module):
         t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
         query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)         # (B, d)
 
-        # 6. 分块计算与所有候选实体的双曲距离
-        chunk_size = min(self.chunk_size, self.num_entities)
-        all_scores = []
-        for start in range(0, self.num_entities, chunk_size):
-            end = min(start + chunk_size, self.num_entities)
-            cand = entity_embedding[start:end]                           # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            c_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, self.c)      # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)        # (B, C)
-            chunk_scores = -dist_sq + self.entity_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                            # (B, N)
+        # 6. 双维分块计算与所有候选实体的双曲距离
+        scores = _chunked_hyperbolic_dist_score(
+            query, entity_embedding, self.entity_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                            # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
@@ -923,14 +924,15 @@ class HyperbolicAttHRel(nn.Module):
     """
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 chunk_size=512):
+                 query_chunk_size=128, candidate_chunk_size=256):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
             embedding_dim: 嵌入维度（必须为偶数）
             c: 双曲空间曲率
             dropout: Dropout 概率
-            chunk_size: 分块计算大小，用于避免 OOM（默认 512）
+            query_chunk_size: query 分块大小，控制峰值显存（默认 128）
+            candidate_chunk_size: candidate 分块大小，控制峰值显存（默认 256）
         """
         super(HyperbolicAttHRel, self).__init__()
 
@@ -941,7 +943,8 @@ class HyperbolicAttHRel(nn.Module):
         self.embedding_dim = embedding_dim
         self.half_dim = embedding_dim // 2
         self.c = c
-        self.chunk_size = chunk_size
+        self.query_chunk_size = query_chunk_size
+        self.candidate_chunk_size = candidate_chunk_size
 
         # 全局旋转角与反射角
         self.global_rot = nn.Parameter(torch.Tensor(self.half_dim))
@@ -1021,24 +1024,11 @@ class HyperbolicAttHRel(nn.Module):
         # 5. 构造查询：Möbius 差分 q = (-mixed_hyp) ⊕_c h_o
         query = HyperbolicOps.mobius_add(-mixed_hyp, o_emb, self.c)  # (B, d)
 
-        # 6. 将关系嵌入（切空间）映射至双曲空间并分块计算距离，避免 OOM
-        R = rel_embedding.shape[0]
+        # 6. 将关系嵌入（切空间）映射至双曲空间并双维分块计算距离，避免 OOM
         rel_hyp = HyperbolicOps.exp_map_zero(rel_embedding, self.c)  # (R, d)
 
-        chunk_size = min(self.chunk_size, R)
-        all_scores = []
-        for start in range(0, R, chunk_size):
-            end = min(start + chunk_size, R)
-            cand = rel_hyp[start:end]                                      # (C, d)
-            C = end - start
-            q_exp = query.unsqueeze(1).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            r_exp = cand.unsqueeze(0).expand(B, C, self.embedding_dim).reshape(
-                B * C, self.embedding_dim)
-            diff = HyperbolicOps.mobius_add(-q_exp, r_exp, self.c)        # (B*C, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(B, C)          # (B, C)
-            chunk_scores = -dist_sq + self.rel_bias[start:end].unsqueeze(0)
-            all_scores.append(chunk_scores)
-
-        scores = torch.cat(all_scores, dim=1)                             # (B, R)
+        scores = _chunked_hyperbolic_dist_score(
+            query, rel_hyp, self.rel_bias,
+            self.c, self.query_chunk_size, self.candidate_chunk_size
+        )                                                             # (B, R)
         return scores

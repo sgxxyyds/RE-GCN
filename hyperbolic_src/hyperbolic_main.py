@@ -334,6 +334,8 @@ def run_experiment(args):
         curvature_min=args.curvature_min,
         curvature_max=args.curvature_max,
         num_heads=args.attn_heads,
+        query_chunk_size=args.query_chunk_size,
+        candidate_chunk_size=args.candidate_chunk_size,
     )
     
     # Log model parameter count
@@ -587,6 +589,12 @@ if __name__ == '__main__':
     parser.add_argument("--input-dropout", type=float, default=0.2, help="Input dropout")
     parser.add_argument("--hidden-dropout", type=float, default=0.2, help="Hidden dropout")
     parser.add_argument("--feat-dropout", type=float, default=0.2, help="Feature dropout")
+    parser.add_argument("--query-chunk-size", type=int, default=128,
+                        help="Query chunk size for dual-dimension chunked scoring in hyperbolic decoders "
+                             "(controls peak GPU memory; smaller = less memory, more loop overhead)")
+    parser.add_argument("--candidate-chunk-size", type=int, default=256,
+                        help="Candidate chunk size for dual-dimension chunked scoring in hyperbolic decoders "
+                             "(controls peak GPU memory; smaller = less memory, more loop overhead)")
     
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
