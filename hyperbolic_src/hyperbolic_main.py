@@ -336,24 +336,50 @@ def run_experiment(args):
         num_heads=args.attn_heads,
         query_chunk_size=args.query_chunk_size,
         candidate_chunk_size=args.candidate_chunk_size,
+        # EST enhancement parameters
+        use_est=args.use_est,
+        est_state_alpha=args.est_state_alpha,
+        est_encoder=args.est_encoder,
+        use_time_aware_negative=args.use_time_aware_negative,
     )
-    
+
+    # ======= EST: build temporal index and true-tails dict =======
+    if args.use_est:
+        from hyperbolic_src.est_components import (
+            HyperbolicTemporalIndex,
+            build_true_tails_dict,
+        )
+        logger.info("Building EST temporal index from training data...")
+        temporal_index = HyperbolicTemporalIndex(history_len=args.est_history_len)
+        temporal_index.build(train_list, num_rels)
+        model.set_temporal_index(temporal_index)
+        logger.info(
+            f"Temporal index built: {len(temporal_index._index)} entities indexed, "
+            f"K={args.est_history_len}"
+        )
+
+        if args.use_time_aware_negative:
+            logger.info("Building true-tails dict for TANS...")
+            true_tails = build_true_tails_dict(train_list, num_rels)
+            model.set_true_tails_dict(true_tails)
+            logger.info(f"True-tails dict built: {len(true_tails)} (head,rel) keys")
+
     # Log model parameter count
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
-    
+
     if use_cuda:
         torch.cuda.set_device(args.gpu)
         model.cuda()
         logger.info(f"Model moved to GPU {args.gpu}")
-    
+
     # Build static graph
     if args.add_static_graph:
         static_graph = build_sub_graph(
             len(static_node_id), num_static_rels, static_triples, use_cuda, args.gpu
         )
-    
+
     # Optimizer - use same setup as original RE-GCN for consistency
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
@@ -454,8 +480,10 @@ def run_experiment(args):
                     mini_batch = snapshot_triples[batch_start:batch_end]
                     
                     # Compute loss for this mini-batch
+                    # Pass query_time so EST components (ETNR, QCHHE, TANS) can activate.
                     loss_e, loss_r, loss_static, loss_radius = model.get_loss(
-                        history_glist, mini_batch, static_graph, use_cuda
+                        history_glist, mini_batch, static_graph, use_cuda,
+                        query_time=train_sample_num
                     )
                     loss = args.task_weight * loss_e + (1 - args.task_weight) * loss_r + loss_static + loss_radius
                     
@@ -637,13 +665,31 @@ if __name__ == '__main__':
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
     parser.add_argument("--test-history-len", type=int, default=20, help="Testing history length")
-    
+
+    # EST Enhancement settings (借鉴 Evolving-Beyond-Snapshots)
+    parser.add_argument("--use-est", action='store_true', default=False,
+                        help="Enable EST-inspired enhancements: H-PES persistent memory, "
+                             "ETNR event-level retrieval, QCHHE query-conditioned encoding.")
+    parser.add_argument("--est-history-len", type=int, default=32,
+                        help="Number of historical events to retrieve per query entity (ETNR). "
+                             "Only used when --use-est is set.")
+    parser.add_argument("--est-state-alpha", type=float, default=0.2,
+                        help="EMA update rate α for H-PES fast state (0 < α ≤ 1). "
+                             "Larger values track recent context more aggressively.")
+    parser.add_argument("--est-encoder", type=str, default="gru",
+                        choices=["gru", "transformer"],
+                        help="Temporal backbone for QCHHE: 'gru' (lightweight, recommended) "
+                             "or 'transformer' (higher capacity, more compute).")
+    parser.add_argument("--use-time-aware-negative", action='store_true', default=False,
+                        help="Enable TANS: mask known true tail entities in training negatives "
+                             "to eliminate false-negative noise in cross-entropy loss.")
+
     # Logging settings (NEW)
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
-    
+
     args = parser.parse_args()
     print(args)
-    
+
     run_experiment(args)

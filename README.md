@@ -110,7 +110,99 @@ a_r       = σ(w_r^T · concat(log_0(h_s), rel_emb_r))
 | `roth`（**推荐**） | ★★★★☆（Givens 旋转） | 中 | 默认双曲解码器 |
 | `atth` | ★★★★★（旋转+反射+注意力） | 较高 | 高精度研究 |
 
-## 项目结构
+## EST 增强功能（v4 新增）
+
+本次更新（v4）借鉴 [Evolving-Beyond-Snapshots (EST)](https://github.com/yuanwuyuan9/Evolving-Beyond-Snapshots) 的核心思路，为双曲时序 RE-GCN 引入五个互补模块，在保持快照范式和双曲几何优势的基础上，突破长时依赖、时间精度与负采样三大局限。
+
+### EST 增强模块概览
+
+| 模块 | 缩写 | 功能 | 激活标志 |
+|------|------|------|---------|
+| 双曲持久实体状态 | **H-PES** | 跨快照 fast/slow 双层记忆，保留长期语义积累 | `--use-est` |
+| 事件级时序邻居检索 | **ETNR** | 面向查询实体的 K 近邻历史事件索引 | `--use-est` |
+| 双曲时间差投影 | **H-TDP** | `log(1+Δt)` 映射连续时间差到庞加莱球 | `--use-est` |
+| 查询条件化历史编码器 | **QCHHE** | GRU/Transformer 编码历史序列，查询关系条件化 | `--use-est` |
+| 时间感知负采样 | **TANS** | 过滤训练已知真实尾实体，消除假负例噪声 | `--use-time-aware-negative` |
+
+### 整体流程（启用 `--use-est` 后）
+
+```
+初始嵌入 + H-PES 慢状态注入
+          │
+          ▼
+快照级双曲图卷积（LGCN/HGAT，现有流程）
+          │
+          ▼
+ETNR：检索查询实体的 K 近邻历史事件
+  → H-TDP：时间差 Δt → 庞加莱球时间嵌入
+  → QCHHE：GRU/Transformer 历史编码 + 查询条件化
+  → 门控融合（全局快照嵌入 ⊕ 局部历史上下文）
+          │
+          ▼
+（训练阶段）TANS 过滤假负例 + H-PES 状态回写
+          │
+          ▼
+双曲解码器打分（RotH/AttH/MuRP）
+```
+
+### 新增文件
+
+```
+hyperbolic_src/
+└── est_components.py    # H-PES, H-TDP, ETNR, QCHHE, TANS 五模块实现
+```
+
+### 启用 EST 增强的训练命令
+
+```bash
+# 推荐：EST 完整增强 + RotH 解码器 + LGCN 编码器
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --lr 0.001 \
+    --n-layers 2 \
+    --n-hidden 200 \
+    --self-loop \
+    --encoder lgcn \
+    --decoder roth \
+    --curvature 0.01 \
+    --use-est \
+    --est-history-len 32 \
+    --est-state-alpha 0.2 \
+    --est-encoder gru \
+    --use-time-aware-negative \
+    --entity-prediction \
+    --gpu 0
+```
+
+```bash
+# 仅启用持久记忆（最小改动，无 ETNR/QCHHE 开销）
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 --test-history-len 3 \
+    --n-hidden 200 --n-layers 2 \
+    --encoder lgcn --decoder roth \
+    --curvature 0.01 \
+    --use-est \
+    --entity-prediction --gpu 0
+```
+
+### EST 相关参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--use-est` | 启用 EST 增强（H-PES + ETNR + H-TDP + QCHHE） | False |
+| `--est-history-len` | 每个查询实体检索的历史事件数 K | 32 |
+| `--est-state-alpha` | H-PES fast 状态 EMA 速率 α（越大跟踪越快） | 0.2 |
+| `--est-encoder` | QCHHE 时序骨干：`gru`（推荐）或 `transformer` | gru |
+| `--use-time-aware-negative` | 启用 TANS：过滤训练集已知真实尾实体 | False |
+
+### 向后兼容性
+
+所有 EST 模块默认**关闭**（`--use-est` 不指定即为原始行为）。  
+不添加 EST 标志时，模型与原 `HyperbolicRecurrentRGCN` 行为完全一致，  
+已有实验结果可完全复现。
+
+
 
 ```
 ├── hyperbolic_src/               # Hyperbolic Temporal RE-GCN (NEW)
@@ -120,6 +212,7 @@ a_r       = σ(w_r^T · concat(log_0(h_s), rel_emb_r))
 │   ├── hyperbolic_decoder.py     # Decoders (含三种真双曲解码器)
 │   ├── hyperbolic_model.py       # Main model
 │   ├── hyperbolic_main.py        # Training script
+│   ├── est_components.py         # EST 增强组件 (H-PES/ETNR/H-TDP/QCHHE/TANS)
 │   └── 模型优化方案.md            # 模型优化设计文档
 ├── src/                          # Original RE-GCN baseline
 ├── data/                         # Dataset directory
@@ -377,6 +470,7 @@ d_H(x, y) = (2/√c) · arctanh(√c · ||(-x) ⊕_c y||)
 2. **显式的时间语义层级演化** - 使用半径建模概念抽象随时间变化
 3. **几何解耦** - 将结构传播（GCN）与时间记忆（GRU）分离
 4. **真双曲解码器（v3 新增）** - 三种在 Poincaré 球上直接打分的解码器，充分利用双曲几何特性
+5. **EST 风格双曲增强（v4 新增）** - 持久实体记忆（H-PES）、事件级检索（ETNR）、连续时间编码（H-TDP）、查询条件化历史编码（QCHHE）、时间感知负采样（TANS）五大模块，突破快照范式局限
 
 ## 原始 RE-GCN（基线）
 
@@ -424,5 +518,7 @@ python main.py -d ICEWS14s \
 - MuRP: Multi-Relational Poincaré Graph Embeddings (NeurIPS 2019)
 - RotH/AttH: Low-Dimensional Hyperbolic Knowledge Graph Embeddings (ACL 2020)
 - Hyperbolic Neural Networks (NeurIPS 2018)
+- Evolving-Beyond-Snapshots (EST): [yuanwuyuan9/Evolving-Beyond-Snapshots](https://github.com/yuanwuyuan9/Evolving-Beyond-Snapshots)
 - 技术方案文档：`hyperbolic_temporal_re_gcn_技术方案.md`（中文版本，包含详细数学推导与设计理由）
 - 优化方案文档：`hyperbolic_src/模型优化方案.md`（双曲解码器与编码器优化详细说明）
+- EST 集成方案：`hyperbolic_src/EST借鉴双曲时序知识图谱技术方案.md`（五模块详细设计文档）

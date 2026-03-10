@@ -12,10 +12,12 @@ Key Components:
 - HyperbolicGRU: GRU operations in hyperbolic space
 - HyperbolicDecoder: Decoders for TKGC scoring
 - HyperbolicModel: Main model combining all components
+- EST Components: H-PES, H-TDP, ETNR, QCHHE, TANS (EST-inspired enhancements)
 
 Reference:
 - Technical solution: hyperbolic_temporal_re_gcn_技术方案.md
 - Optimization plan: 模型优化方案.md
+- EST integration plan: EST借鉴双曲时序知识图谱技术方案.md
 - RE-GCN: Temporal Knowledge Graph Reasoning Based on Evolutional Representation Learning
 
 Usage:
@@ -24,6 +26,16 @@ Usage:
     
     # For full model (requires DGL)
     from hyperbolic_src.hyperbolic_model import HyperbolicRecurrentRGCN
+
+    # For EST components (no DGL required)
+    from hyperbolic_src.est_components import (
+        PersistentEntityState,
+        TimeDeltaProjection,
+        HyperbolicTemporalIndex,
+        HyperbolicHistoryEncoder,
+        build_true_tails_dict,
+        apply_time_aware_filter,
+    )
 """
 
 # Lazy imports to avoid DGL dependency issues in incompatible environments
@@ -36,6 +48,7 @@ Usage:
 #   from hyperbolic_src.hyperbolic_gru import HyperbolicGRUCell
 #   from hyperbolic_src.hyperbolic_decoder import HyperbolicConvTransE
 #   from hyperbolic_src.hyperbolic_model import HyperbolicRecurrentRGCN
+#   from hyperbolic_src.est_components import PersistentEntityState, HyperbolicTemporalIndex
 
 def _lazy_import():
     """Lazy import all modules."""
@@ -77,6 +90,15 @@ def _lazy_import():
         HyperbolicRGCNCell,
         HyperbolicRecurrentRGCN
     )
+
+    from hyperbolic_src.est_components import (
+        PersistentEntityState,
+        TimeDeltaProjection,
+        HyperbolicTemporalIndex,
+        HyperbolicHistoryEncoder,
+        build_true_tails_dict,
+        apply_time_aware_filter,
+    )
     
     return {
         'HyperbolicOps': HyperbolicOps,
@@ -102,7 +124,14 @@ def _lazy_import():
         'HyperbolicComplEx': HyperbolicComplEx,
         'HyperbolicBaseRGCN': HyperbolicBaseRGCN,
         'HyperbolicRGCNCell': HyperbolicRGCNCell,
-        'HyperbolicRecurrentRGCN': HyperbolicRecurrentRGCN
+        'HyperbolicRecurrentRGCN': HyperbolicRecurrentRGCN,
+        # EST components
+        'PersistentEntityState': PersistentEntityState,
+        'TimeDeltaProjection': TimeDeltaProjection,
+        'HyperbolicTemporalIndex': HyperbolicTemporalIndex,
+        'HyperbolicHistoryEncoder': HyperbolicHistoryEncoder,
+        'build_true_tails_dict': build_true_tails_dict,
+        'apply_time_aware_filter': apply_time_aware_filter,
     }
 
 __all__ = [
@@ -140,7 +169,15 @@ __all__ = [
     # Models
     'HyperbolicBaseRGCN',
     'HyperbolicRGCNCell',
-    'HyperbolicRecurrentRGCN'
+    'HyperbolicRecurrentRGCN',
+
+    # EST-inspired enhancement components
+    'PersistentEntityState',
+    'TimeDeltaProjection',
+    'HyperbolicTemporalIndex',
+    'HyperbolicHistoryEncoder',
+    'build_true_tails_dict',
+    'apply_time_aware_filter',
 ]
 
-__version__ = '2.0.0'
+__version__ = '3.0.0'
