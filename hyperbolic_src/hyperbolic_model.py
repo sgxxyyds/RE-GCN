@@ -169,7 +169,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
                  curvature_min=1e-4, curvature_max=1e-1,
                  num_heads=4,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 use_est=False, est_state_alpha=0.2,
+                 est_encoder="gru", use_time_aware_negative=False):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse" | "murp" | "roth" | "atth")
@@ -212,6 +214,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
             num_heads: Number of attention heads (for HGAT encoder)
             query_chunk_size: Query chunk size for dual-dimension chunked scoring (default 128)
             candidate_chunk_size: Candidate chunk size for dual-dimension chunked scoring (default 256)
+            use_est: Enable EST-inspired enhancements (H-PES, ETNR, QCHHE, TANS). Default False.
+            est_state_alpha: EMA rate for persistent fast state (H-PES). Default 0.2.
+            est_encoder: Temporal backbone for QCHHE: 'gru' or 'transformer'. Default 'gru'.
+            use_time_aware_negative: Apply TANS filtering to training negatives. Default False.
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -244,6 +250,14 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.num_heads = num_heads
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+
+        # ============ EST Enhancement Flags ============
+        self.use_est = use_est
+        self.est_state_alpha = est_state_alpha
+        self.use_time_aware_negative = use_time_aware_negative
+        # These are set externally after construction
+        self.temporal_index = None       # HyperbolicTemporalIndex (ETNR)
+        self.true_tails_by_hr = None     # dict for TANS filtering
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
@@ -409,7 +423,30 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 f"Decoder '{decoder_name}' not implemented. "
                 f"Choose from: hyperbolic_convtranse, murp, roth, atth"
             )
-        
+
+        # ============ EST Components (optional) ============
+        if use_est:
+            from hyperbolic_src.est_components import (
+                PersistentEntityState,
+                TimeDeltaProjection,
+                HyperbolicHistoryEncoder,
+            )
+            self.persistent_state = PersistentEntityState(
+                num_ents, h_dim, alpha=est_state_alpha
+            )
+            self.time_delta_proj = TimeDeltaProjection(h_dim, curvature=c)
+            self.history_encoder = HyperbolicHistoryEncoder(
+                h_dim, encoder_type=est_encoder, curvature=c
+            )
+            # Gated fusion: (global ⊕ local) in tangent space
+            self.fusion_gate = nn.Linear(h_dim * 2, h_dim)
+            nn.init.xavier_uniform_(self.fusion_gate.weight)
+            nn.init.zeros_(self.fusion_gate.bias)
+            logger.info(
+                f"  - EST enabled: alpha={est_state_alpha}, "
+                f"encoder={est_encoder}, tans={use_time_aware_negative}"
+            )
+
         # Log model architecture summary
         logger.info(f"Hyperbolic Recurrent RGCN initialized:")
         logger.info(f"  - Entities: {num_ents}, Relations: {num_rels}")
@@ -426,6 +463,146 @@ class HyperbolicRecurrentRGCN(nn.Module):
             target = torch.as_tensor(radius_target, dtype=torch.float)
         self.register_buffer("radius_target", target)
         self.radius_static = nn.Parameter(self.radius_target.clone())
+
+    # =========================================================================
+    # EST Integration Helper Methods
+    # =========================================================================
+
+    def set_temporal_index(self, temporal_index) -> None:
+        """
+        Attach a pre-built HyperbolicTemporalIndex for ETNR queries.
+
+        Args:
+            temporal_index: HyperbolicTemporalIndex instance (or None to disable).
+        """
+        self.temporal_index = temporal_index
+
+    def set_true_tails_dict(self, true_tails_by_hr: dict) -> None:
+        """
+        Attach the true-tails lookup table for TANS filtering.
+
+        Args:
+            true_tails_by_hr: Dict (head_id, rel_id) → set[tail_id].
+        """
+        self.true_tails_by_hr = true_tails_by_hr
+
+    def _fuse_global_and_local(
+        self,
+        h_global: torch.Tensor,   # [B, d] Poincaré ball
+        h_local: torch.Tensor,    # [B, d] Poincaré ball
+        c_val: float,
+    ) -> torch.Tensor:
+        """
+        Gated fusion of snapshot-GCN global embedding and EST local context.
+
+            fused_tangent = gate * local_tangent + (1 - gate) * global_tangent
+            fused = exp_0(fused_tangent)
+
+        Returns:
+            [B, d] fused embeddings on Poincaré ball.
+        """
+        g_t = HyperbolicOps.log_map_zero(h_global, c_val)   # [B, d]
+        l_t = HyperbolicOps.log_map_zero(h_local, c_val)    # [B, d]
+        gate_input = torch.cat([g_t, l_t], dim=-1)           # [B, 2d]
+        gate = torch.sigmoid(self.fusion_gate(gate_input))   # [B, d]
+        fused_t = gate * l_t + (1.0 - gate) * g_t
+        fused_t = torch.clamp(fused_t, -10.0, 10.0)
+        fused = HyperbolicOps.exp_map_zero(fused_t, c_val)
+        return HyperbolicOps.project_to_ball(fused, c_val)
+
+    def _est_enrich_embeddings(
+        self,
+        all_triples: torch.Tensor,   # [2B, 3] including inverse triples
+        global_emb: torch.Tensor,    # [N, d] Poincaré ball (full entity matrix)
+        query_time: int,
+        c_val: float,
+        use_cuda: bool,
+    ) -> torch.Tensor:
+        """
+        Enrich query-entity embeddings with EST local context.
+
+        For unique head entities in all_triples, retrieves their K most-recent
+        historical events, encodes them via QCHHE, and fuses with the global
+        snapshot embedding.  Non-query entities remain unchanged.
+
+        Returns:
+            [N, d] entity embedding matrix with enriched rows for query entities.
+        """
+        if self.temporal_index is None:
+            return global_emb
+
+        device = global_emb.device
+
+        # Unique query entity IDs (heads of forward + inverse triples)
+        unique_heads = torch.unique(all_triples[:, 0])       # [Q]
+        unique_heads_np = unique_heads.cpu().numpy()
+
+        # ETNR: retrieve K nearest events for each unique head
+        nb_ents, nb_rels, deltas, mask = self.temporal_index.query(
+            unique_heads_np, query_time, device
+        )
+        # nb_ents / nb_rels: [Q, K]  deltas: [Q, K]  mask: [Q, K]
+
+        # Neighbour entity embeddings (inject slow state if available)
+        Q, K = nb_ents.shape
+        nb_flat = nb_ents.reshape(-1)                        # [Q*K]
+        nb_emb_flat = HyperbolicOps.exp_map_zero(
+            self.dynamic_emb[nb_flat], c_val
+        )                                                    # [Q*K, d] Poincaré
+        nb_emb_flat = self.persistent_state.inject_slow_state(
+            nb_emb_flat, c_val
+        )                                                    # slow-state enriched
+        nb_emb = nb_emb_flat.reshape(Q, K, self.h_dim)      # [Q, K, d]
+
+        # Neighbour relation embeddings
+        rl_flat = nb_rels.reshape(-1)                        # [Q*K]
+        rl_emb_flat = HyperbolicOps.exp_map_zero(
+            self.h_0[rl_flat], c_val
+        )                                                    # [Q*K, d]
+        rl_emb = rl_emb_flat.reshape(Q, K, self.h_dim)      # [Q, K, d]
+
+        # H-TDP: time delta projection
+        time_emb = self.time_delta_proj(deltas, c_val)       # [Q, K, d]
+
+        # Query tangent vectors (global snapshot embedding of query entities)
+        q_global = global_emb[unique_heads]                  # [Q, d] Poincaré
+        q_tangent = HyperbolicOps.log_map_zero(q_global, c_val)  # [Q, d] tangent
+
+        # QCHHE: query-conditioned history encoding
+        context_hyp = self.history_encoder(
+            nb_emb, rl_emb, time_emb, q_tangent, mask, c_val
+        )                                                    # [Q, d] Poincaré
+
+        # Gated fusion with global embedding
+        fused = self._fuse_global_and_local(q_global, context_hyp, c_val)  # [Q, d]
+
+        # Write enriched embeddings back into global_emb (clone to avoid in-place grad issue)
+        enriched_emb = global_emb.clone()
+        enriched_emb[unique_heads] = fused
+        return enriched_emb
+
+    def _writeback_states(
+        self,
+        all_triples: torch.Tensor,
+        enriched_emb: torch.Tensor,
+        c_val: float,
+    ) -> None:
+        """
+        H-PES writeback: update persistent fast/slow states from current context.
+
+        Runs under torch.no_grad() and uses .detach() so no gradients are
+        introduced via the persistent buffers.
+
+        Args:
+            all_triples:  [2B, 3] tensor (forward + inverse triples).
+            enriched_emb: [N, d] Poincaré ball – enriched entity embeddings.
+            c_val:        Curvature scalar.
+        """
+        unique_heads = torch.unique(all_triples[:, 0])
+        context_tangent = HyperbolicOps.log_map_zero(
+            enriched_emb[unique_heads].detach(), c_val
+        )
+        self.persistent_state.update_states(unique_heads.cpu(), context_tangent)
     
     def get_curvature(self):
         """Get the current curvature value."""
@@ -519,7 +696,13 @@ class HyperbolicRecurrentRGCN(nn.Module):
             self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
             static_emb = None
         self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c_val)
-        
+
+        # ============ H-PES: Inject accumulated slow state (EST) ============
+        # Enriches initial embeddings with long-term entity memory.
+        # Runs with detach so gradients do not flow into the persistent buffer.
+        if self.use_est:
+            self.h = self.persistent_state.inject_slow_state(self.h, c_val)
+
         # Log initial embedding statistics
         if self.run_analysis and self.training:
             HyperbolicOps.log_embedding_stats(self.h, "init_embeddings", c_val)
@@ -665,16 +848,19 @@ class HyperbolicRecurrentRGCN(nn.Module):
             
             return all_triples, score, score_rel
     
-    def get_loss(self, glist, triples, static_graph, use_cuda):
+    def get_loss(self, glist, triples, static_graph, use_cuda, query_time=None):
         """
         Compute training loss with detailed logging.
-        
+
         Args:
             glist: List of history graphs
             triples: Training triplets
             static_graph: Static graph
             use_cuda: Whether to use CUDA
-            
+            query_time: Current snapshot index (int, optional).
+                        Required for EST enrichment and TANS. If None, EST
+                        components that need event-level retrieval are skipped.
+
         Returns:
             loss_ent: Entity prediction loss
             loss_rel: Relation prediction loss
@@ -702,20 +888,45 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         # Forward pass
         evolve_embs, static_emb, r_emb, _, _ = self.forward(glist, static_graph, use_cuda)
-        
+
         # Get final embeddings
         pre_emb = evolve_embs[-1]
         if self.layer_norm:
             h_tangent = HyperbolicOps.log_map_zero(pre_emb, c_val)
             h_tangent = F.normalize(h_tangent)
             pre_emb = HyperbolicOps.exp_map_zero(h_tangent, c_val)
-        
+
+        # ======= EST Enrichment: replace query-entity rows with EST context =======
+        if self.use_est and query_time is not None:
+            pre_emb = self._est_enrich_embeddings(
+                all_triples, pre_emb, query_time, c_val, use_cuda
+            )
+            # H-PES writeback (no_grad, only during training)
+            if self.training:
+                self._writeback_states(all_triples, pre_emb, c_val)
+
         # Entity prediction loss
         if self.entity_prediction:
             if hasattr(self.decoder_ob, 'loss'):
                 loss_ent = self.decoder_ob.loss(pre_emb, r_emb, all_triples)
             else:
-                scores_ob = self.decoder_ob.forward(pre_emb, r_emb, all_triples).view(-1, self.num_ents)
+                scores_ob = self.decoder_ob.forward(
+                    pre_emb, r_emb, all_triples
+                ).view(-1, self.num_ents)
+
+                # ======= TANS: mask known true tails to remove false negatives =======
+                if (self.use_time_aware_negative
+                        and self.true_tails_by_hr is not None
+                        and self.training):
+                    from hyperbolic_src.est_components import apply_time_aware_filter
+                    scores_ob = apply_time_aware_filter(
+                        scores_ob,
+                        all_triples[:, 0],
+                        all_triples[:, 1],
+                        all_triples[:, 2],
+                        self.true_tails_by_hr,
+                    )
+
                 loss_ent = self.loss_e(scores_ob, all_triples[:, 2])
         
         # Relation prediction loss
