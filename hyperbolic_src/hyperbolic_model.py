@@ -56,6 +56,10 @@ from hyperbolic_src.hyperbolic_decoder import (
     HyperbolicAttH,
     HyperbolicAttHRel,
 )
+from hyperbolic_src.est_components import (
+    PersistentEntityState,
+    TimeDeltaProjection,
+)
 
 
 class HyperbolicBaseRGCN(nn.Module):
@@ -169,7 +173,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
                  curvature_min=1e-4, curvature_max=1e-1,
                  num_heads=4,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 # EST-inspired parameters
+                 use_persistent_state=False, state_alpha=0.5,
+                 state_fuse="gate", use_time_delta=False):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse" | "murp" | "roth" | "atth")
@@ -212,6 +219,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
             num_heads: Number of attention heads (for HGAT encoder)
             query_chunk_size: Query chunk size for dual-dimension chunked scoring (default 128)
             candidate_chunk_size: Candidate chunk size for dual-dimension chunked scoring (default 256)
+            use_persistent_state: Whether to use EST-inspired persistent entity state memory (default False)
+            state_alpha: EMA update rate for persistent fast state (default 0.5)
+            state_fuse: Fusion strategy for persistent state - "gate" or "add" (default "gate")
+            use_time_delta: Whether to encode time deltas between snapshots in relation GRU (default False)
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -244,6 +255,12 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.num_heads = num_heads
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+
+        # ============ EST-Inspired Parameters ============
+        self.use_persistent_state = use_persistent_state
+        self.state_alpha = state_alpha
+        self.state_fuse = state_fuse
+        self.use_time_delta = use_time_delta
         
         # ============ Curvature Parameter ============
         # Option to learn curvature or keep it fixed
@@ -285,6 +302,34 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         self.w2 = nn.Parameter(torch.Tensor(h_dim, h_dim))
         nn.init.xavier_normal_(self.w2)
+
+        # ============ EST-Inspired Modules ============
+        # Persistent entity state: fast/slow two-tier global memory
+        if use_persistent_state:
+            self.persistent_state = PersistentEntityState(
+                num_ents, h_dim,
+                state_alpha=state_alpha,
+                state_fuse=state_fuse,
+            )
+            logger.info(
+                f"EST: Persistent entity state enabled "
+                f"(alpha={state_alpha}, fuse={state_fuse})"
+            )
+            # Cache all entity indices as a buffer to avoid repeated allocation
+            self.register_buffer(
+                "_all_entity_ids",
+                torch.arange(num_ents, dtype=torch.long),
+                persistent=False,
+            )
+
+        # Time delta projection: encode recency of each historical snapshot
+        if use_time_delta:
+            self.time_delta_proj = TimeDeltaProjection(h_dim)
+            # Linear projection to combine time delta with relation context
+            self.time_delta_to_rel = nn.Linear(h_dim, h_dim)
+            nn.init.xavier_uniform_(self.time_delta_to_rel.weight)
+            nn.init.zeros_(self.time_delta_to_rel.bias)
+            logger.info("EST: Time delta encoding enabled")
         
         # ============ Static Graph Components ============
         if self.use_static:
@@ -417,6 +462,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         logger.info(f"  - Curvature: {c}, Learnable: {learn_curvature}")
         logger.info(f"  - Use residual evolution: {use_residual_evolution}")
         logger.info(f"  - Encoder: {encoder_name}, Decoder: {decoder_name}")
+        logger.info(f"  - EST persistent state: {use_persistent_state}, time delta: {use_time_delta}")
         if encoder_name == "hgat":
             logger.info(f"  - Attention heads: {num_heads}")
 
@@ -469,12 +515,15 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         Strictly follows RE-GCN's forward flow, adapted for hyperbolic space:
         1. Initialize entity embeddings (optionally from static graph)
-        2. For each time step:
+        2. (EST) Fuse initial embeddings with persistent entity state (if enabled)
+        3. For each time step:
            a. Compute relation context aggregation (same as RE-GCN)
-           b. Update relation embeddings via GRU (same as RE-GCN)
-           c. Apply RE-GCN graph convolution (hyperbolic version)
-           d. Apply time gate for entity evolution (same as RE-GCN)
-           e. (Optional) Apply temporal radius evolution (hyperbolic innovation)
+           b. (EST) Condition relation context with time delta embedding (if enabled)
+           c. Update relation embeddings via GRU (same as RE-GCN)
+           d. Apply RE-GCN graph convolution (hyperbolic version)
+           e. Apply time gate for entity evolution (same as RE-GCN)
+           f. (Optional) Apply temporal radius evolution (hyperbolic innovation)
+           g. (EST) Writeback updated entity state to persistent memory (if enabled)
         
         Args:
             g_list: List of DGL graphs for each time step
@@ -519,6 +568,18 @@ class HyperbolicRecurrentRGCN(nn.Module):
             self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
             static_emb = None
         self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c_val)
+
+        # ============ EST: Persistent State Fusion (pre-loop) ============
+        # Fuse initial entity embeddings with accumulated persistent state.
+        # Only entities with non-zero accumulated state are affected;
+        # all operations are in tangent space for numerical stability.
+        if self.use_persistent_state:
+            h_tangent_init = HyperbolicOps.log_map_zero(self.h, c_val)
+            # Use cached entity IDs buffer to avoid per-call allocation
+            all_ids = self._all_entity_ids.to(h_tangent_init.device)
+            h_tangent_fused = self.persistent_state.fuse_with_state(h_tangent_init, all_ids)
+            self.h = HyperbolicOps.exp_map_zero(h_tangent_fused, c_val)
+            self.h = HyperbolicOps.project_to_ball(self.h, c_val)
         
         # Log initial embedding statistics
         if self.run_analysis and self.training:
@@ -526,6 +587,17 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         history_embs = []
         time_gate_values = []
+        total_steps = len(g_list)
+
+        # Pre-compute time delta embeddings for all steps to avoid per-iteration
+        # tensor construction. delta[i] = total_steps - i, so i=0 (oldest) has the
+        # largest delta (furthest from present) and i=T-1 (most recent) has delta=1.
+        if self.use_time_delta:
+            deltas = torch.arange(
+                total_steps, 0, -1,
+                dtype=torch.float,
+                device=self.dynamic_emb.device,
+            )  # [total_steps, total_steps-1, ..., 1]
         
         for i, g in enumerate(g_list):
             g = g.to(self.gpu)
@@ -543,6 +615,16 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 x = temp_e[span[0]:span[1], :]
                 x_mean = torch.mean(x, dim=0, keepdim=True)
                 x_input[r_idx] = x_mean
+
+            # ============ EST: Time Delta Conditioning ============
+            # Add a snapshot-level recency bias to the relation context.
+            # All relations in the snapshot share the same time conditioning because
+            # we are encoding a global "this snapshot is from T-i steps ago" signal,
+            # not per-relation temporal sensitivity.
+            if self.use_time_delta:
+                delta_emb = self.time_delta_proj(deltas[i])      # (1, h_dim)
+                delta_bias = self.time_delta_to_rel(delta_emb)   # (1, h_dim)
+                x_input = x_input + delta_bias.squeeze(0)
             
             # ============ Relation Evolution (RE-GCN style) ============
             if i == 0:
@@ -607,6 +689,16 @@ class HyperbolicRecurrentRGCN(nn.Module):
                         f"Time step {i}: radius_delta_mean={evolution_stats.get('delta_mean', 0.0):.4f}, "
                         f"radius_delta_std={evolution_stats.get('delta_std', 0.0):.4f}"
                     )
+
+            # ============ EST: Persistent State Writeback ============
+            # Write the updated entity embeddings (in tangent space) back to the
+            # fast/slow persistent memory so future sequences can benefit.
+            # Only performed during training to avoid state accumulation at test time.
+            if self.use_persistent_state and self.training:
+                h_tangent_wb = HyperbolicOps.log_map_zero(self.h, c_val)
+                # Reuse cached entity IDs buffer
+                all_ids = self._all_entity_ids.to(h_tangent_wb.device)
+                self.persistent_state.writeback(all_ids, h_tangent_wb.detach())
             
             history_embs.append(self.h)
         
@@ -812,4 +904,26 @@ class HyperbolicRecurrentRGCN(nn.Module):
         if self.training_stats["time_gate_values"]:
             summary["avg_time_gate"] = sum(self.training_stats["time_gate_values"]) / len(self.training_stats["time_gate_values"])
         
+        # Include EST state statistics if persistent state is enabled
+        if self.use_persistent_state:
+            fast_norm = self.persistent_state.entity_state_fast.norm(dim=-1)
+            slow_norm = self.persistent_state.entity_state_slow.norm(dim=-1)
+            active = (slow_norm > 1e-6).float().mean().item()
+            summary["est_fast_norm_mean"] = fast_norm.mean().item()
+            summary["est_slow_norm_mean"] = slow_norm.mean().item()
+            summary["est_active_fraction"] = active
+        
         return summary
+
+    def reset_persistent_state(self):
+        """
+        Reset the persistent entity state to zero.
+
+        Call this method between independent temporal sequences (e.g., between
+        training and evaluation) to prevent historical state from leaking across
+        unrelated evaluation runs. During normal training the state accumulates
+        across all training snapshots, which is the intended behavior.
+        """
+        if self.use_persistent_state:
+            self.persistent_state.reset_state()
+            logger.debug("Persistent entity state reset to zero.")

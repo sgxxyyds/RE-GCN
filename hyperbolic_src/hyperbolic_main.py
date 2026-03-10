@@ -94,6 +94,10 @@ def test(model, history_list, test_list, num_rels, num_nodes, use_cuda,
         model.load_state_dict(checkpoint['state_dict'])
     
     model.eval()
+
+    # EST: Reset persistent state before evaluation to avoid training state leakage.
+    # This ensures evaluation uses only the model parameters (not accumulated buffers).
+    model.reset_persistent_state()
     
     # Get history for testing
     input_list = [snap for snap in history_list[-args.test_history_len:]]
@@ -336,6 +340,11 @@ def run_experiment(args):
         num_heads=args.attn_heads,
         query_chunk_size=args.query_chunk_size,
         candidate_chunk_size=args.candidate_chunk_size,
+        # EST-inspired parameters
+        use_persistent_state=args.use_persistent_state,
+        state_alpha=args.state_alpha,
+        state_fuse=args.state_fuse,
+        use_time_delta=args.use_time_delta,
     )
     
     # Log model parameter count
@@ -642,6 +651,32 @@ if __name__ == '__main__':
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
+
+    # EST-inspired settings
+    parser.add_argument(
+        "--use-persistent-state", action="store_true", default=False,
+        help="Enable EST-inspired persistent entity state memory (fast/slow two-tier memory). "
+             "Maintains global entity context across temporal snapshots, preventing "
+             "information loss between time steps. Inspired by Evolving-Beyond-Snapshots."
+    )
+    parser.add_argument(
+        "--state-alpha", type=float, default=0.5,
+        help="EMA update rate for persistent fast state (0=no update, 1=full replace). "
+             "Controls how quickly the fast state adapts to new context. Default: 0.5"
+    )
+    parser.add_argument(
+        "--state-fuse", type=str, default="gate", choices=["gate", "add"],
+        help="Fusion strategy for persistent state with current embeddings. "
+             "'gate': learned interpolation gate (recommended). "
+             "'add': simple residual addition. Default: gate"
+    )
+    parser.add_argument(
+        "--use-time-delta", action="store_true", default=False,
+        help="Enable EST-inspired time delta encoding for relation GRU. "
+             "Encodes how many snapshots ago each history entry is (recency signal), "
+             "conditioning the relation evolution on temporal distance. "
+             "Inspired by Evolving-Beyond-Snapshots time delta projection."
+    )
     
     args = parser.parse_args()
     print(args)
