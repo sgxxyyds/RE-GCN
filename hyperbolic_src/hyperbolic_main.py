@@ -636,7 +636,11 @@ if __name__ == '__main__':
     parser.add_argument("--opn", type=str, default="sub", help="Operation for CompGCN")
     parser.add_argument("--n-bases", type=int, default=100, help="Number of weight bases")
     parser.add_argument("--n-layers", type=int, default=2, help="Number of GCN layers")
-    parser.add_argument("--self-loop", action='store_true', default=True, help="Use self-loop")
+    parser.add_argument("--self-loop", action='store_true', dest='self_loop',
+                        help="Use self-loop (default: enabled)")
+    parser.add_argument("--no-self-loop", action='store_false', dest='self_loop',
+                        help="Disable self-loop")
+    parser.set_defaults(self_loop=True)
     parser.add_argument("--layer-norm", action='store_true', default=False, help="Use layer normalization")
     parser.add_argument("--relation-prediction", action='store_true', default=False, help="Enable relation prediction")
     parser.add_argument("--entity-prediction", action='store_true', default=False, help="Enable entity prediction")
@@ -651,7 +655,12 @@ if __name__ == '__main__':
                              "Smaller values reduce peak GPU memory usage.")
     
     # Decoder settings
-    parser.add_argument("--decoder", type=str, default="roth", help="Decoder method")
+    parser.add_argument("--decoder", type=str, default="hyperbolic_convtranse",
+                        choices=["hyperbolic_convtranse", "murp", "roth", "atth"],
+                        help="Decoder type: hyperbolic_convtranse (ConvTransE in tangent space, default), "
+                             "murp (Möbius rotation + hyperbolic distance), "
+                             "roth (Givens rotation + hyperbolic distance), "
+                             "atth (attention-weighted rotation + hyperbolic distance)")
     parser.add_argument("--input-dropout", type=float, default=0.2, help="Input dropout")
     parser.add_argument("--hidden-dropout", type=float, default=0.2, help="Hidden dropout")
     parser.add_argument("--feat-dropout", type=float, default=0.2, help="Feature dropout")
