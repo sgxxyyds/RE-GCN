@@ -71,20 +71,31 @@ class PersistentEntityState(nn.Module):
         self.slow_threshold = nn.Parameter(torch.tensor(0.5))
         self.slow_scale = nn.Parameter(torch.tensor(2.0))
 
-    def inject_slow_state(self, h_hyp: torch.Tensor, c) -> torch.Tensor:
+    def inject_slow_state(self, h_hyp: torch.Tensor, c,
+                          entity_ids=None) -> torch.Tensor:
         """
-        Add the accumulated slow state to *all* entity embeddings (Poincaré ball).
+        Add the accumulated slow state to entity embeddings (Poincaré ball).
 
         Operates in tangent space to stay numerically stable:
-            h_tangent ← log_0(h_hyp) + slow_state
+            h_tangent ← log_0(h_hyp) + slow_state[entity_ids]
             h_out     ← exp_0(clamp(h_tangent))
 
         This is called inside forward() before the first snapshot GCN, so the
-        enriched embeddings propagate through the graph convolution.
+        enriched embeddings propagate through the graph convolution.  It is
+        also called from ``_est_enrich_embeddings`` for a flat batch of
+        neighbour entity embeddings whose IDs are given by ``entity_ids``.
 
         Args:
-            h_hyp: [N, d] entity embeddings on Poincaré ball.
-            c:     Curvature scalar (float or 0-dim tensor).
+            h_hyp:       [N, d] entity embeddings on Poincaré ball.
+            c:           Curvature scalar (float or 0-dim tensor).
+            entity_ids:  Optional 1-D long tensor whose length matches the
+                         first dimension of ``h_hyp`` (i.e. ``h_hyp.shape[0]``).
+                         Each element is the entity index corresponding to that
+                         row of ``h_hyp``; only the matching rows of the slow-
+                         state matrix are added.  When ``None``, ``h_hyp`` is
+                         assumed to already cover *all* entities in order
+                         (``h_hyp.shape[0] == self.num_ents``) and the full
+                         slow-state matrix is used directly.
 
         Returns:
             [N, d] enriched entity embeddings on Poincaré ball.
@@ -93,7 +104,11 @@ class PersistentEntityState(nn.Module):
 
         h_tangent = HyperbolicOps.log_map_zero(h_hyp, c_val)
         # Use detach() to prevent gradients flowing back through persistent state
-        h_tangent = h_tangent + self.entity_state_slow.detach()
+        if entity_ids is not None:
+            slow = self.entity_state_slow[entity_ids].detach()
+        else:
+            slow = self.entity_state_slow.detach()
+        h_tangent = h_tangent + slow
         # Clamp tangent vectors to [-10, 10] for numerical stability —
         # the same convention used throughout hyperbolic_model.py.
         h_tangent = torch.clamp(h_tangent, -10.0, 10.0)
