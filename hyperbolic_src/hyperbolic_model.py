@@ -550,7 +550,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
             self.dynamic_emb[nb_flat], c_val
         )                                                    # [Q*K, d] Poincaré
         nb_emb_flat = self.persistent_state.inject_slow_state(
-            nb_emb_flat, c_val
+            nb_emb_flat, c_val, entity_ids=nb_flat
         )                                                    # slow-state enriched
         nb_emb = nb_emb_flat.reshape(Q, K, self.h_dim)      # [Q, K, d]
 

@@ -87,3 +87,8 @@ venv.bak/
 
 # Models directory (generated)
 models/
+
+# Data directory (distributed separately)
+data/
+._data
+._*
