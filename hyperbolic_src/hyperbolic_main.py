@@ -380,9 +380,40 @@ def run_experiment(args):
             len(static_node_id), num_static_rels, static_triples, use_cuda, args.gpu
         )
 
-    # Optimizer - use same setup as original RE-GCN for consistency
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
+    # Optimizer - mixed Riemannian/Euclidean when requested and geoopt available
+    _use_riemannian = getattr(args, 'use_riemannian_adam', False)
+    try:
+        from hyperbolic_src.hyperbolic_model import GEOOPT_AVAILABLE
+        import geoopt as _geoopt
+    except (ImportError, AttributeError):
+        GEOOPT_AVAILABLE = False
+        _geoopt = None
+
+    if _use_riemannian and GEOOPT_AVAILABLE and _geoopt is not None:
+        # 分离流形参数与欧式参数，分别使用 RiemannianAdam 和 Adam
+        manifold_params = []
+        euclidean_params = []
+        for name, param in model.named_parameters():
+            if isinstance(param, _geoopt.ManifoldParameter):
+                manifold_params.append(param)
+                logger.info(f"  [流形参数] {name}")
+            else:
+                euclidean_params.append(param)
+        optimizer = _geoopt.optim.RiemannianAdam(
+            [
+                {"params": manifold_params, "lr": args.lr},
+                {"params": euclidean_params, "lr": args.lr, "weight_decay": 1e-5},
+            ]
+        )
+        logger.info(
+            f"Optimizer: RiemannianAdam (流形参数 {len(manifold_params)} 个) + "
+            f"Adam (欧式参数 {len(euclidean_params)} 个), lr={args.lr}"
+        )
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        if _use_riemannian and not GEOOPT_AVAILABLE:
+            logger.warning("--use-riemannian-adam 已指定但 geoopt 未安装，回退到普通 Adam。")
+        logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
     
     # Testing mode
     if args.test and os.path.exists(model_state_file):
@@ -697,6 +728,13 @@ if __name__ == '__main__':
     parser.add_argument("--verbose", action='store_true', default=False, help="Enable verbose/debug logging")
     parser.add_argument("--log-file", action='store_true', default=False, help="Save logs to file")
     parser.add_argument("--log-interval", type=int, default=1, help="Log epoch summary every N epochs")
+
+    # 黎曼优化器设置（Riemannian Optimizer）
+    parser.add_argument("--use-riemannian-adam", action='store_true', default=False,
+                        help="对流形参数（实体嵌入 dynamic_emb）使用 geoopt.RiemannianAdam，"
+                             "对欧式参数使用普通 Adam。"
+                             "仅在 geoopt 已安装且解码器为 murp/roth/atth 时有效。"
+                             "(Use geoopt.RiemannianAdam for manifold parameters, Adam for Euclidean ones.)")
 
     args = parser.parse_args()
     print(args)

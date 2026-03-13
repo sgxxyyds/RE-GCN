@@ -35,6 +35,19 @@ import logging
 # Set up logging
 logger = logging.getLogger("hyperbolic_model")
 
+# 尝试导入 geoopt（黎曼优化器支持）
+try:
+    import geoopt
+    from geoopt import PoincareBall
+    GEOOPT_AVAILABLE = True
+    logger.info("geoopt 可用：ManifoldParameter 与 RiemannianAdam 已激活")
+except ImportError:
+    GEOOPT_AVAILABLE = False
+    logger.warning(
+        "geoopt 未安装，将回退到普通 nn.Parameter。"
+        "建议安装 geoopt>=0.2.0 以获得黎曼优化器支持：pip install geoopt>=0.2.0"
+    )
+
 from hyperbolic_src.hyperbolic_ops import (
     HyperbolicOps, 
     TemporalRadiusEvolution
@@ -278,10 +291,20 @@ class HyperbolicRecurrentRGCN(nn.Module):
         }
         
         # ============ Entity Embeddings ============
-        # Dynamic entity embeddings (learnable, in tangent space initially)
-        # Use same initialization as original RE-GCN for consistency (std=1.0)
-        self.dynamic_emb = nn.Parameter(torch.Tensor(num_ents, h_dim))
-        nn.init.normal_(self.dynamic_emb, std=1.0)
+        # Dynamic entity embeddings (learnable)
+        # 若 geoopt 可用，声明为 ManifoldParameter（Poincaré 球流形），
+        # 以便 RiemannianAdam 沿测地线更新，保证点始终在 Poincaré 球内；
+        # 否则回退为普通 nn.Parameter（在切空间初始化，前向中映射至双曲空间）。
+        if GEOOPT_AVAILABLE:
+            _manifold = PoincareBall(c=c)
+            # 在切空间初始化后用 exp_map 投影到流形上
+            _init_tangent = torch.empty(num_ents, h_dim)
+            nn.init.normal_(_init_tangent, std=0.1)
+            _init_hyp = HyperbolicOps.exp_map_zero(_init_tangent, c)
+            self.dynamic_emb = geoopt.ManifoldParameter(_init_hyp, manifold=_manifold)
+        else:
+            self.dynamic_emb = nn.Parameter(torch.Tensor(num_ents, h_dim))
+            nn.init.normal_(self.dynamic_emb, std=1.0)
         
         # ============ Relation Embeddings ============
         # Relation embeddings in tangent space
@@ -691,9 +714,14 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Map to hyperbolic space
             self.h = HyperbolicOps.exp_map_zero(static_emb, c_val)
         else:
-            # Initialize from dynamic embeddings (RE-GCN style)
-            init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
-            self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
+            # 若 dynamic_emb 已是 ManifoldParameter（在 Poincaré 球上），直接投影保护；
+            # 否则仍在切空间，需先用 exp_map_zero 映射至双曲空间。
+            if GEOOPT_AVAILABLE and isinstance(self.dynamic_emb, geoopt.ManifoldParameter):
+                init_emb = HyperbolicOps.project_to_ball(self.dynamic_emb, c_val)
+                self.h = init_emb
+            else:
+                init_emb = F.normalize(self.dynamic_emb) if self.layer_norm else self.dynamic_emb
+                self.h = HyperbolicOps.exp_map_zero(init_emb, c_val)
             static_emb = None
         self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c_val)
 
