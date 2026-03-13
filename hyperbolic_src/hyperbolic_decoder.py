@@ -547,14 +547,16 @@ class HyperbolicMuRP(nn.Module):
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
 
-        # 关系对角旋转向量（Möbius 矩阵乘法的对角近似）
-        # 初始化范围 [-1, 1] 参考原始 MuRP 实现，使初始旋转幅度适中
-        self.rel_diag = nn.Parameter(torch.Tensor(num_relations, embedding_dim))
-        nn.init.uniform_(self.rel_diag, -1.0, 1.0)
-
-        # 关系平移（切空间初始化，前向中映射至双曲空间）
-        self.rel_trans = nn.Parameter(torch.Tensor(num_relations, embedding_dim))
-        nn.init.uniform_(self.rel_trans, -1e-3, 1e-3)
+        # 动态关系投影层（Dynamic Relation Projection）：
+        # 将时序编码器输出的动态关系嵌入 r(t) 映射为对角旋转向量与切空间平移向量
+        # rot_proj:   W_rot · r(t) + b_rot → diag ∈ R^d（对角旋转近似）
+        # trans_proj: W_trans · r(t) + b_trans → v_r(t) ∈ T_0H^d（切空间平移）
+        self.rot_proj = nn.Linear(embedding_dim, embedding_dim)
+        self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
+        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.zeros_(self.rot_proj.bias)
+        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.zeros_(self.trans_proj.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
@@ -565,7 +567,7 @@ class HyperbolicMuRP(nn.Module):
         """
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（切空间，暂未使用，保持接口一致），形状 (num_relations, d)
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
             mode: "train" 或 "test"
 
@@ -573,26 +575,33 @@ class HyperbolicMuRP(nn.Module):
             得分矩阵，形状 (batch_size, num_entities)
         """
         B = len(triplets)
-        s_emb = entity_embedding[triplets[:, 0]]        # (B, d)，Poincaré 球
         r_idx = triplets[:, 1]
+        # 边界保护：截断，防止点飞出 Poincaré 球
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)  # (B, d)
 
-        # 1. 对角 Möbius 矩阵乘法：R_r ⊗_c h_s = exp_0(diag_r * log_0(h_s))
-        rot = self.rel_diag[r_idx]                       # (B, d)
-        s_tangent = HyperbolicOps.log_map_zero(s_emb, self.c)   # (B, d)
+        # 1. 动态对角旋转：diag_r(t) = rot_proj(r(t))
+        #    R_r(t) ⊗_c h_s = exp_0(diag_r(t) * log_0(h_s))
+        rot = self.rot_proj(rel_embedding[r_idx])                 # (B, d)
+        s_tangent = HyperbolicOps.log_map_zero(s_emb, self.c)    # (B, d)
         s_tangent = self.dropout(s_tangent)
-        rot_s_tangent = rot * s_tangent                  # 对角乘法
+        rot_s_tangent = rot * s_tangent                           # 对角乘法
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tangent, self.c)  # (B, d)
 
-        # 2. Möbius 平移：query = rot_s ⊕_c t_r
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
-        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)             # (B, d)
+        # 2. 动态 Möbius 平移：v_r(t) = trans_proj(r(t))，t_r(t) = exp_0(v_r(t))
+        #    query = rot_s ⊕_c t_r(t)
+        v_r = self.trans_proj(rel_embedding[r_idx])              # (B, d)，切空间
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)           # (B, d)，Poincaré 球
+        # 边界保护
+        rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
+        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)    # (B, d)
 
         # 3. 双维分块计算与所有候选实体的双曲距离，避免 OOM
-        cand_bias = self.entity_bias                               # (N,)
+        cand_bias = self.entity_bias                              # (N,)
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, cand_bias,
             self.c, self.query_chunk_size, self.candidate_chunk_size
-        )                                                          # (B, N)
+        )                                                         # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
@@ -602,22 +611,25 @@ class HyperbolicMuRP(nn.Module):
 
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（接口一致性保留，未使用）
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
 
         Returns:
             标量 CE 损失
         """
-        s_emb = entity_embedding[triplets[:, 0]]
         r_idx = triplets[:, 1]
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)
 
-        rot = self.rel_diag[r_idx]
+        rot = self.rot_proj(rel_embedding[r_idx])
         s_tangent = HyperbolicOps.log_map_zero(s_emb, self.c)
         s_tangent = self.dropout(s_tangent)
         rot_s_tangent = rot * s_tangent
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tangent, self.c)
 
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        v_r = self.trans_proj(rel_embedding[r_idx])
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)
+        rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
 
         return _chunked_hyperbolic_ce_loss(
@@ -779,13 +791,16 @@ class HyperbolicRotH(nn.Module):
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
 
-        # Givens 旋转角（每个关系 d/2 个角度）
-        self.rel_rot = nn.Parameter(torch.Tensor(num_relations, self.half_dim))
-        nn.init.uniform_(self.rel_rot, -math.pi, math.pi)
-
-        # 关系平移（切空间初始化）
-        self.rel_trans = nn.Parameter(torch.Tensor(num_relations, embedding_dim))
-        nn.init.uniform_(self.rel_trans, -1e-3, 1e-3)
+        # 动态关系投影层（Dynamic Relation Projection）：
+        # 将时序编码器输出的动态关系嵌入 r(t) 映射为 Givens 旋转角与切空间平移向量
+        # rot_proj:   W_rot · r(t) + b_rot → θ_r(t) ∈ R^{d/2}（Givens 旋转角）
+        # trans_proj: W_trans · r(t) + b_trans → v_r(t) ∈ T_0H^d（切空间平移）
+        self.rot_proj = nn.Linear(embedding_dim, self.half_dim)
+        self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
+        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.zeros_(self.rot_proj.bias)
+        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.zeros_(self.trans_proj.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
@@ -817,7 +832,7 @@ class HyperbolicRotH(nn.Module):
         """
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（切空间，暂未使用，保持接口一致），形状 (num_relations, d)
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
             mode: "train" 或 "test"
 
@@ -826,18 +841,25 @@ class HyperbolicRotH(nn.Module):
         """
         B = len(triplets)
         r_idx = triplets[:, 1]
-        s_emb = entity_embedding[triplets[:, 0]]   # (B, d)，Poincaré 球
+        # 边界保护：截断，防止点飞出 Poincaré 球
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)  # (B, d)
 
-        # 1. 切空间 Givens 旋转：Rot_r(h_s) = exp_0(G_r · log_0(h_s))
+        # 1. 动态 Givens 旋转：θ_r(t) = rot_proj(r(t))
+        #    Rot_r(t)(h_s) = exp_0(G_θ_r(t) · log_0(h_s))
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)   # (B, d)
         s_tan = self.dropout(s_tan)
-        r_angles = self.rel_rot[r_idx]                       # (B, d/2)
+        r_angles = self.rot_proj(rel_embedding[r_idx])       # (B, d/2)
         rot_s_tan = self.givens_rotation(s_tan, r_angles)    # (B, d)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)  # (B, d)
 
-        # 2. Möbius 平移：query = rot_s ⊕_c t_r
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
-        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)              # (B, d)
+        # 2. 动态 Möbius 平移：v_r(t) = trans_proj(r(t))，t_r(t) = exp_0(v_r(t))
+        #    query = rot_s ⊕_c t_r(t)
+        v_r = self.trans_proj(rel_embedding[r_idx])          # (B, d)，切空间
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)       # (B, d)，Poincaré 球
+        # 边界保护
+        rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
+        query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)  # (B, d)
 
         # 3. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
@@ -853,22 +875,25 @@ class HyperbolicRotH(nn.Module):
 
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（接口一致性保留，未使用）
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
 
         Returns:
             标量 CE 损失
         """
         r_idx = triplets[:, 1]
-        s_emb = entity_embedding[triplets[:, 0]]
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)
 
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         s_tan = self.dropout(s_tan)
-        r_angles = self.rel_rot[r_idx]
+        r_angles = self.rot_proj(rel_embedding[r_idx])
         rot_s_tan = self.givens_rotation(s_tan, r_angles)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)
 
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        v_r = self.trans_proj(rel_embedding[r_idx])
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)
+        rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
 
         return _chunked_hyperbolic_ce_loss(
@@ -1039,21 +1064,24 @@ class HyperbolicAttH(nn.Module):
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
 
-        # Givens 旋转角
-        self.rel_rot = nn.Parameter(torch.Tensor(num_relations, self.half_dim))
-        nn.init.uniform_(self.rel_rot, -math.pi, math.pi)
-
-        # Givens 反射角
-        self.rel_ref = nn.Parameter(torch.Tensor(num_relations, self.half_dim))
-        nn.init.uniform_(self.rel_ref, -math.pi, math.pi)
-
-        # 注意力权重向量（concat(log_0(h_s), rel_emb) → scalar）
-        self.attn_weight = nn.Parameter(torch.Tensor(num_relations, 2 * embedding_dim))
-        nn.init.xavier_uniform_(self.attn_weight)
-
-        # 关系平移
-        self.rel_trans = nn.Parameter(torch.Tensor(num_relations, embedding_dim))
-        nn.init.uniform_(self.rel_trans, -1e-3, 1e-3)
+        # 动态关系投影层（Dynamic Relation Projection）：
+        # 将时序编码器输出的动态关系嵌入 r(t) 分别映射为旋转角、反射角、切空间平移与注意力权重向量
+        # rot_proj:   W_rot · r(t) + b_rot → θ_rot ∈ R^{d/2}（Givens 旋转角）
+        # ref_proj:   W_ref · r(t) + b_ref → θ_ref ∈ R^{d/2}（Givens 反射角）
+        # trans_proj: W_trans · r(t) + b_trans → v_r(t) ∈ T_0H^d（切空间平移）
+        # attn_proj:  W_attn · r(t) + b_attn → w_r(t) ∈ R^{2d}（注意力权重向量）
+        self.rot_proj = nn.Linear(embedding_dim, self.half_dim)
+        self.ref_proj = nn.Linear(embedding_dim, self.half_dim)
+        self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
+        self.attn_proj = nn.Linear(embedding_dim, 2 * embedding_dim)
+        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.zeros_(self.rot_proj.bias)
+        nn.init.xavier_uniform_(self.ref_proj.weight)
+        nn.init.zeros_(self.ref_proj.bias)
+        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.zeros_(self.trans_proj.bias)
+        nn.init.normal_(self.attn_proj.weight, std=0.01)
+        nn.init.zeros_(self.attn_proj.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
@@ -1086,7 +1114,7 @@ class HyperbolicAttH(nn.Module):
         """
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（切空间），形状 (num_relations, d)
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
             mode: "train" 或 "test"
 
@@ -1095,32 +1123,39 @@ class HyperbolicAttH(nn.Module):
         """
         B = len(triplets)
         r_idx = triplets[:, 1]
-        s_emb = entity_embedding[triplets[:, 0]]   # (B, d)，Poincaré 球
+        # 边界保护：截断，防止点飞出 Poincaré 球
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)  # (B, d)
 
         # 1. 切空间投影
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)   # (B, d)
         s_tan = self.dropout(s_tan)
 
-        # 2. Givens 旋转与反射
-        r_rot = self.rel_rot[r_idx]                          # (B, d/2)
-        r_ref = self.rel_ref[r_idx]                          # (B, d/2)
+        # 2. 动态 Givens 旋转与反射：θ_rot(t) = rot_proj(r(t))，θ_ref(t) = ref_proj(r(t))
+        rel_emb_r = rel_embedding[r_idx]                     # (B, d)，动态关系嵌入
+        r_rot = self.rot_proj(rel_emb_r)                     # (B, d/2)
+        r_ref = self.ref_proj(rel_emb_r)                     # (B, d/2)
         rot_s = self.givens_rotation(s_tan, r_rot)           # (B, d)
         ref_s = self.givens_reflection(s_tan, r_ref)         # (B, d)
 
-        # 3. 注意力权重：a_r = σ(w_r^T · [log_0(h_s); rel_emb_r])
-        rel_emb_r = rel_embedding[r_idx]                     # (B, d)
+        # 3. 动态注意力权重：w_r(t) = attn_proj(r(t))，a_r = σ(w_r(t)^T · [s_tan; r(t)])
+        attn_w = self.attn_proj(rel_emb_r)                   # (B, 2d)
         attn_input = torch.cat([s_tan, rel_emb_r], dim=-1)  # (B, 2d)
         a_r = torch.sigmoid(
-            torch.sum(self.attn_weight[r_idx] * attn_input, dim=-1, keepdim=True)
+            torch.sum(attn_w * attn_input, dim=-1, keepdim=True)
         )                                                     # (B, 1)
 
         # 4. 插值混合
         mixed_tan = a_r * rot_s + (1.0 - a_r) * ref_s       # (B, d)
         mixed_hyp = HyperbolicOps.exp_map_zero(mixed_tan, self.c)  # (B, d)
 
-        # 5. Möbius 平移：query = mixed_hyp ⊕_c t_r
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)  # (B, d)
-        query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)         # (B, d)
+        # 5. 动态 Möbius 平移：v_r(t) = trans_proj(r(t))，t_r(t) = exp_0(v_r(t))
+        #    query = mixed_hyp ⊕_c t_r(t)
+        v_r = self.trans_proj(rel_emb_r)                     # (B, d)，切空间
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)       # (B, d)，Poincaré 球
+        # 边界保护
+        mixed_hyp = HyperbolicOps.project_to_ball(mixed_hyp, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
+        query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)   # (B, d)
 
         # 6. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
@@ -1136,33 +1171,37 @@ class HyperbolicAttH(nn.Module):
 
         Args:
             entity_embedding: 实体嵌入（Poincaré 球），形状 (num_entities, d)
-            rel_embedding: 关系嵌入（切空间），形状 (num_relations, d)
+            rel_embedding: 时序编码器输出的动态关系嵌入（切空间），形状 (num_relations, d)
             triplets: 三元组索引 (s, r, o)，形状 (batch_size, 3)
 
         Returns:
             标量 CE 损失
         """
         r_idx = triplets[:, 1]
-        s_emb = entity_embedding[triplets[:, 0]]
+        s_emb = HyperbolicOps.project_to_ball(entity_embedding[triplets[:, 0]], self.c)
 
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         s_tan = self.dropout(s_tan)
 
-        r_rot = self.rel_rot[r_idx]
-        r_ref = self.rel_ref[r_idx]
+        rel_emb_r = rel_embedding[r_idx]
+        r_rot = self.rot_proj(rel_emb_r)
+        r_ref = self.ref_proj(rel_emb_r)
         rot_s = self.givens_rotation(s_tan, r_rot)
         ref_s = self.givens_reflection(s_tan, r_ref)
 
-        rel_emb_r = rel_embedding[r_idx]
+        attn_w = self.attn_proj(rel_emb_r)
         attn_input = torch.cat([s_tan, rel_emb_r], dim=-1)
         a_r = torch.sigmoid(
-            torch.sum(self.attn_weight[r_idx] * attn_input, dim=-1, keepdim=True)
+            torch.sum(attn_w * attn_input, dim=-1, keepdim=True)
         )
 
         mixed_tan = a_r * rot_s + (1.0 - a_r) * ref_s
         mixed_hyp = HyperbolicOps.exp_map_zero(mixed_tan, self.c)
 
-        t_r = HyperbolicOps.exp_map_zero(self.rel_trans[r_idx], self.c)
+        v_r = self.trans_proj(rel_emb_r)
+        t_r = HyperbolicOps.exp_map_zero(v_r, self.c)
+        mixed_hyp = HyperbolicOps.project_to_ball(mixed_hyp, self.c)
+        t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)
 
         return _chunked_hyperbolic_ce_loss(
