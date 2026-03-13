@@ -49,23 +49,32 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 - 在时序演化中保持层次结构
 - 将结构传播（GCN）与时间记忆（GRU）分离
 
-### 5. 双曲解码器优化（v3 新增）
+### 5. 双曲解码器优化（v3 新增，v5 重大升级）
 
 原有基线解码器将实体嵌入映射到切空间（欧式空间）后打分，等价于对 `arctanh` 变换后的欧式向量跑 ConvTransE，
 双曲空间的层级几何优势在解码阶段完全丢失。
 
-本次优化实现了三种**真双曲解码器**，所有打分操作均在 Poincaré 球上直接进行：
+本次优化实现了三种**真双曲解码器**，所有打分操作均在 Poincaré 球上直接进行。
+
+> **v5 升级**：解码器中的关系旋转/平移/注意力参数已从静态 `nn.Parameter` 改为**动态关系投影层**（`nn.Linear`），
+> 由时序编码器输出的动态关系嵌入 `r(t)` 经投影得到时变的旋转、平移等参数，
+> 使解码器能感知关系语义随时间的演化。同时新增 Poincaré 球边界保护（`project_to_ball`），防止数值溢出。
 
 #### 5.1 MuRP 风格双曲距离解码器（`--decoder murp`）
 
 评分函数：
 
 ```
-f(s, r, o) = -d_H²(R_r ⊗_c h_s ⊕_c t_r, h_o) + b_s + b_o
+f(s, r, o, t) = -d_H²(R_r(t) ⊗_c h_s ⊕_c t_r(t), h_o) + b_s + b_o
+
+其中：
+  diag_r(t) = W_rot · r(t) + b_rot          （动态对角旋转向量）
+  v_r(t)    = W_trans · r(t) + b_trans       （动态切空间平移向量）
+  t_r(t)    = exp_0(v_r(t))                  （映射至 Poincaré 球）
 ```
 
-- `R_r ⊗_c h_s`：对角 Möbius 矩阵乘法（关系旋转）
-- `⊕_c`：Möbius 加法（关系平移）
+- `R_r(t) ⊗_c h_s`：动态对角 Möbius 矩阵乘法（时变关系旋转）
+- `⊕_c`：Möbius 加法（时变关系平移）
 - `d_H`：Poincaré 球双曲距离
 - 实现简单，适合快速原型验证
 
@@ -74,17 +83,22 @@ f(s, r, o) = -d_H²(R_r ⊗_c h_s ⊕_c t_r, h_o) + b_s + b_o
 评分函数：
 
 ```
-f(s, r, o) = -d_H²(Rot_r(h_s) ⊕_c t_r, h_o) + b_s + b_o
+f(s, r, o, t) = -d_H²(Rot_r(t)(h_s) ⊕_c t_r(t), h_o) + b_s + b_o
+
+其中：
+  θ_r(t)    = W_rot · r(t) + b_rot          （动态 Givens 旋转角）
+  v_r(t)    = W_trans · r(t) + b_trans       （动态切空间平移向量）
+  t_r(t)    = exp_0(v_r(t))                  （映射至 Poincaré 球）
 ```
 
-- `Rot_r(h_s) = exp_0(G_r · log_0(h_s))`：切空间应用 Givens 旋转后映射回双曲空间
-- `G_r`：分块对角 Givens 旋转矩阵（每对相邻维度一个旋转角）
+- `Rot_r(t)(h_s) = exp_0(G_θ_r(t) · log_0(h_s))`：切空间应用动态 Givens 旋转后映射回双曲空间
+- `G_θ_r(t)`：由时序关系嵌入动态生成的分块对角 Givens 旋转矩阵
 - Givens 旋转保持等距性，不破坏双曲度量，且能建模反对称关系
 - 数学完整性与实现复杂度均衡，适合作为默认双曲解码器
 
 ```
-G_r = blockdiag[cos θ₁, -sin θ₁;   cos θ₂, -sin θ₂; ...]
-                [sin θ₁,  cos θ₁;   sin θ₂,  cos θ₂; ...]
+G_r(t) = blockdiag[cos θ₁(t), -sin θ₁(t);   cos θ₂(t), -sin θ₂(t); ...]
+                   [sin θ₁(t),  cos θ₁(t);   sin θ₂(t),  cos θ₂(t); ...]
 ```
 
 #### 5.3 AttH 风格注意力双曲解码器（`--decoder atth`）
@@ -92,13 +106,20 @@ G_r = blockdiag[cos θ₁, -sin θ₁;   cos θ₂, -sin θ₂; ...]
 评分函数：
 
 ```
-f(s, r, o) = -d_H²(h_r(s) ⊕_c t_r, h_o) + b_s + b_o
-h_r(s)    = a_r · Rot_r(h_s) + (1 - a_r) · Ref_r(h_s)
-a_r       = σ(w_r^T · concat(log_0(h_s), rel_emb_r))
+f(s, r, o, t) = -d_H²(h_r(t)(s) ⊕_c t_r(t), h_o) + b_s + b_o
+h_r(t)(s)     = a_r(t) · Rot_r(t)(h_s) + (1 - a_r(t)) · Ref_r(t)(h_s)
+a_r(t)        = σ(w_r(t)^T · concat(log_0(h_s), r(t)))
+
+其中：
+  θ_rot(t)  = W_rot · r(t) + b_rot          （动态 Givens 旋转角）
+  θ_ref(t)  = W_ref · r(t) + b_ref          （动态 Givens 反射角）
+  w_r(t)    = W_attn · r(t) + b_attn         （动态注意力权重向量）
+  v_r(t)    = W_trans · r(t) + b_trans       （动态切空间平移向量）
+  t_r(t)    = exp_0(v_r(t))                  （映射至 Poincaré 球）
 ```
 
 - 通过注意力机制在**旋转**与**反射**之间自适应插值
-- 旋转（Rot）可建模反对称关系，反射（Ref）可建模对称关系；注意力门控 a_r 决定每个关系的变换偏好
+- 旋转（Rot）可建模反对称关系，反射（Ref）可建模对称关系；动态注意力门控 a_r(t) 决定每个关系在特定时间步的变换偏好
 - 表达能力最强，适合复杂关系结构和精度要求高的场景
 
 #### 解码器对比
@@ -106,9 +127,9 @@ a_r       = σ(w_r^T · concat(log_0(h_s), rel_emb_r))
 | 解码器 | 数学完整性 | 实现复杂度 | 适用场景 |
 |--------|-----------|-----------|---------|
 | `hyperbolic_convtranse`（基线） | ★★☆☆☆（切空间欧式） | 低 | 基线对照 |
-| `murp` | ★★★☆☆（对角旋转） | 低 | 快速原型验证 |
-| `roth`（**推荐**） | ★★★★☆（Givens 旋转） | 中 | 默认双曲解码器 |
-| `atth` | ★★★★★（旋转+反射+注意力） | 较高 | 高精度研究 |
+| `murp` | ★★★☆☆（动态对角旋转） | 低 | 快速原型验证 |
+| `roth`（**推荐**） | ★★★★☆（动态 Givens 旋转） | 中 | 默认双曲解码器 |
+| `atth` | ★★★★★（动态旋转+反射+注意力） | 较高 | 高精度研究 |
 
 ## EST 增强功能（v4 新增）
 
@@ -319,6 +340,28 @@ nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history
     --relation-prediction --decoder roth --gpu 0 > train_roth.log 2>&1 &
 ```
 
+### 训练 RotH + 黎曼优化器（v5 推荐）
+
+启用 `--use-riemannian-adam` 后，实体嵌入（`ManifoldParameter`）使用 `geoopt.RiemannianAdam` 沿测地线更新，
+其余欧式参数使用普通 Adam。需安装 `geoopt>=0.2.0`（已包含在 `requirement.txt` 中）。
+
+```bash
+python hyperbolic_main.py -d ICEWS14s \
+    --train-history-len 3 \
+    --test-history-len 3 \
+    --lr 0.001 \
+    --n-layers 2 \
+    --n-hidden 200 \
+    --self-loop \
+    --layer-norm \
+    --entity-prediction \
+    --relation-prediction \
+    --decoder roth \
+    --curvature 0.01 \
+    --use-riemannian-adam \
+    --gpu 0
+```
+
 ### 使用静态图训练
 ```bash
 python hyperbolic_main.py -d ICEWS14s \
@@ -364,6 +407,7 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--log-interval` | 每 N 个 epoch 输出训练摘要 | 1 |
 | `--log-file` | 将日志保存到文件 | False |
 | `--run-analysis` | 运行分析模式，记录详细统计信息 | False |
+| `--use-riemannian-adam` | 对流形参数使用 `geoopt.RiemannianAdam`，对欧式参数使用 Adam（需安装 geoopt） | False |
 
 ### 优化功能（v3 更新）
 
@@ -381,12 +425,35 @@ python hyperbolic_main.py -d ICEWS14s \
    - `roth`：基于全局 Givens 旋转 + Möbius 差分查询的关系预测
    - `atth`：基于注意力混合变换 + Möbius 差分查询的关系预测
 
-v3 版本后台训练示例：
+### 解码器深度优化（v5 更新）
+
+本次更新（v5）对三种真双曲解码器进行了深度升级：
+
+1. **动态关系投影（Dynamic Relation Projection）**：
+   - 解码器中的关系旋转/平移/注意力参数从静态 `nn.Parameter` 改为 `nn.Linear` 投影层
+   - 由时序编码器输出的动态关系嵌入 `r(t)` 经投影得到每个时间步的旋转、平移等参数
+   - 使解码器能够感知关系语义随时间的演化，增强时序推理能力
+
+2. **Poincaré 球边界保护（Boundary Projection）**：
+   - 在旋转、平移等操作后增加 `project_to_ball` 投影，防止中间结果飞出 Poincaré 球
+   - 提升数值稳定性，避免训练过程中出现 NaN
+
+3. **geoopt 流形参数（ManifoldParameter）**：
+   - 实体嵌入使用 `geoopt.ManifoldParameter` 声明在 Poincaré 球流形上
+   - 配合 `RiemannianAdam` 沿测地线更新，保证嵌入始终在 Poincaré 球内
+   - 当 geoopt 未安装时自动回退为普通 `nn.Parameter`
+
+4. **黎曼优化器（Riemannian Adam）**：
+   - 新增 `--use-riemannian-adam` 标志，对流形参数使用 `geoopt.RiemannianAdam`
+   - 欧式参数仍使用普通 Adam，实现混合优化策略
+   - 需安装 `geoopt>=0.2.0`（已包含在 `requirement.txt` 中）
+
+v5 版本后台训练示例（RotH + RiemannianAdam）：
 ```bash
 nohup python hyperbolic_main.py -d ICEWS14s --train-history-len 3 --test-history-len 3 \
     --n-hidden 200 --n-layers 2 --self-loop --layer-norm --entity-prediction \
-    --relation-prediction --decoder roth --curvature 0.01 --run-analysis \
-    --verbose --log-file --gpu 0 > train_v3_roth.log 2>&1 &
+    --relation-prediction --decoder roth --curvature 0.01 --use-riemannian-adam \
+    --run-analysis --verbose --log-file --gpu 0 > train_v5_roth.log 2>&1 &
 ```
 
 ### 评估模型
@@ -471,6 +538,7 @@ d_H(x, y) = (2/√c) · arctanh(√c · ||(-x) ⊕_c y||)
 3. **几何解耦** - 将结构传播（GCN）与时间记忆（GRU）分离
 4. **真双曲解码器（v3 新增）** - 三种在 Poincaré 球上直接打分的解码器，充分利用双曲几何特性
 5. **EST 风格双曲增强（v4 新增）** - 持久实体记忆（H-PES）、事件级检索（ETNR）、连续时间编码（H-TDP）、查询条件化历史编码（QCHHE）、时间感知负采样（TANS）五大模块，突破快照范式局限
+6. **动态关系投影 + 黎曼优化（v5 新增）** - 解码器关系参数由时序编码器动态生成，配合 geoopt 黎曼优化器沿测地线更新流形参数，保持嵌入几何一致性
 
 ## 原始 RE-GCN（基线）
 
