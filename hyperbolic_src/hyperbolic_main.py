@@ -336,6 +336,9 @@ def run_experiment(args):
         num_heads=args.attn_heads,
         query_chunk_size=args.query_chunk_size,
         candidate_chunk_size=args.candidate_chunk_size,
+        hyp_init_scale=args.hyp_init_scale,
+        hyp_score_scale_init=args.hyp_score_scale_init,
+        hyp_score_margin_init=args.hyp_score_margin_init,
         # EST enhancement parameters
         use_est=args.use_est,
         est_state_alpha=args.est_state_alpha,
@@ -701,6 +704,12 @@ if __name__ == '__main__':
     parser.add_argument("--candidate-chunk-size", type=int, default=256,
                         help="Candidate chunk size for dual-dimension chunked scoring in hyperbolic decoders "
                              "(controls peak GPU memory; smaller = less memory, more loop overhead)")
+    parser.add_argument("--hyp-init-scale", type=float, default=1e-3,
+                        help="Uniform init range for hyperbolic decoder relation projections to avoid early boundary saturation.")
+    parser.add_argument("--hyp-score-scale-init", type=float, default=1.0,
+                        help="Initial value of learnable score scale in hyperbolic decoders.")
+    parser.add_argument("--hyp-score-margin-init", type=float, default=1.0,
+                        help="Initial value of learnable score margin in hyperbolic decoders.")
     
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
