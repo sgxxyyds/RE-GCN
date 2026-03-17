@@ -183,6 +183,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  curvature_min=1e-4, curvature_max=1e-1,
                  num_heads=4,
                  query_chunk_size=128, candidate_chunk_size=256,
+                 hyp_init_scale=1e-3, hyp_score_scale_init=1.0, hyp_score_margin_init=1.0,
                  use_est=False, est_state_alpha=0.2,
                  est_encoder="gru", use_time_aware_negative=False):
         """
@@ -227,6 +228,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
             num_heads: Number of attention heads (for HGAT encoder)
             query_chunk_size: Query chunk size for dual-dimension chunked scoring (default 128)
             candidate_chunk_size: Candidate chunk size for dual-dimension chunked scoring (default 256)
+            hyp_init_scale: Small init range for hyperbolic decoder projection layers
+            hyp_score_scale_init: Initial value for learnable hyperbolic score scale
+            hyp_score_margin_init: Initial value for learnable hyperbolic score margin
             use_est: Enable EST-inspired enhancements (H-PES, ETNR, QCHHE, TANS). Default False.
             est_state_alpha: EMA rate for persistent fast state (H-PES). Default 0.2.
             est_encoder: Temporal backbone for QCHHE: 'gru' or 'transformer'. Default 'gru'.
@@ -406,6 +410,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
+                score_scale_init=hyp_score_scale_init,
+                score_margin_init=hyp_score_margin_init,
             )
             self.rdecoder = HyperbolicMuRPRel(
                 num_rels, h_dim, c=c,
@@ -420,12 +427,18 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
+                score_scale_init=hyp_score_scale_init,
+                score_margin_init=hyp_score_margin_init,
             )
             self.rdecoder = HyperbolicRotHRel(
                 num_rels, h_dim, c=c,
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
+                score_scale_init=hyp_score_scale_init,
+                score_margin_init=hyp_score_margin_init,
             )
         elif decoder_name == "atth":
             # AttH 风格：注意力加权旋转+反射 + 双曲距离
@@ -434,12 +447,18 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
+                score_scale_init=hyp_score_scale_init,
+                score_margin_init=hyp_score_margin_init,
             )
             self.rdecoder = HyperbolicAttHRel(
                 num_rels, h_dim, c=c,
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
+                score_scale_init=hyp_score_scale_init,
+                score_margin_init=hyp_score_margin_init,
             )
         else:
             raise NotImplementedError(

@@ -29,8 +29,19 @@ import math
 
 from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 
+SCORE_SCALE_EPSILON = 1e-6
 
-def _chunked_hyperbolic_dist_score(query, candidates, bias, c, q_chunk_size, c_chunk_size):
+
+def _chunked_hyperbolic_dist_score(
+    query,
+    candidates,
+    bias,
+    c,
+    q_chunk_size,
+    c_chunk_size,
+    score_scale=None,
+    score_margin=0.0,
+):
     """
     双维分块双曲距离打分辅助函数。
 
@@ -72,7 +83,9 @@ def _chunked_hyperbolic_dist_score(query, candidates, bias, c, q_chunk_size, c_c
             diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)   # (Bq*Cq, d)
             dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)  # (Bq, Cq)
 
-            block = -dist_sq
+            block = score_margin - dist_sq
+            if score_scale is not None:
+                block = score_scale * block
             if bias is not None:
                 block = block + bias[c_start:c_end].unsqueeze(0)
 
@@ -90,6 +103,8 @@ def _chunked_hyperbolic_ce_loss(
     candidate_bias=None,
     query_bias=None,
     q_chunk_size=None,
+    score_scale=None,
+    score_margin=0.0,
 ):
     """
     双重分块双曲距离交叉熵损失（训练专用）。
@@ -148,7 +163,9 @@ def _chunked_hyperbolic_ce_loss(
             c_exp = c_chunk.unsqueeze(0).expand(Bq, Cq, d).reshape(Bq * Cq, d)
             diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)        # (Bq*Cq, d)
             dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)   # (Bq, Cq)
-            logits_chunk = -dist_sq                                    # (Bq, Cq)
+            logits_chunk = score_margin - dist_sq                      # (Bq, Cq)
+            if score_scale is not None:
+                logits_chunk = score_scale * logits_chunk
             del q_exp, c_exp, diff, dist_sq
 
             if candidate_bias is not None:
@@ -527,7 +544,8 @@ class HyperbolicMuRP(nn.Module):
     """
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_entities: 实体数量
@@ -553,15 +571,21 @@ class HyperbolicMuRP(nn.Module):
         # trans_proj: W_trans · r(t) + b_trans → v_r(t) ∈ T_0H^d（切空间平移）
         self.rot_proj = nn.Linear(embedding_dim, embedding_dim)
         self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.uniform_(self.rot_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.rot_proj.bias)
-        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.uniform_(self.trans_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.trans_proj.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        # 分布校准：score = scale * (margin - dist)
+        self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
+        self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
         self.dropout = nn.Dropout(dropout)
+
+    def _score_scale(self):
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     def forward(self, entity_embedding, rel_embedding, triplets, mode="train"):
         """
@@ -600,7 +624,9 @@ class HyperbolicMuRP(nn.Module):
         cand_bias = self.entity_bias                              # (N,)
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, cand_bias,
-            self.c, self.query_chunk_size, self.candidate_chunk_size
+            self.c, self.query_chunk_size, self.candidate_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )                                                         # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
@@ -636,6 +662,8 @@ class HyperbolicMuRP(nn.Module):
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
             q_chunk_size=self.query_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )
 
 
@@ -766,7 +794,8 @@ class HyperbolicRotH(nn.Module):
     """
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_entities: 实体数量
@@ -797,15 +826,31 @@ class HyperbolicRotH(nn.Module):
         # trans_proj: W_trans · r(t) + b_trans → v_r(t) ∈ T_0H^d（切空间平移）
         self.rot_proj = nn.Linear(embedding_dim, self.half_dim)
         self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.uniform_(self.rot_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.rot_proj.bias)
-        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.uniform_(self.trans_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.trans_proj.bias)
+        # 切空间流形重塑：恢复 Givens 旋转所需的 2D 配对语义
+        self.reshape_fc1 = nn.Linear(embedding_dim, embedding_dim)
+        self.reshape_fc2 = nn.Linear(embedding_dim, embedding_dim)
+        nn.init.uniform_(self.reshape_fc1.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.reshape_fc1.bias)
+        nn.init.uniform_(self.reshape_fc2.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.reshape_fc2.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
+        self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
         self.dropout = nn.Dropout(dropout)
+
+    def _score_scale(self):
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
+
+    def _reshape_tangent(self, x):
+        """Residual tangent MLP that re-groups mixed features before Givens rotations."""
+        return x + self.reshape_fc2(F.relu(self.reshape_fc1(x)))
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -848,6 +893,7 @@ class HyperbolicRotH(nn.Module):
         #    Rot_r(t)(h_s) = exp_0(G_θ_r(t) · log_0(h_s))
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)   # (B, d)
         s_tan = self.dropout(s_tan)
+        s_tan = self._reshape_tangent(s_tan)
         r_angles = self.rot_proj(rel_embedding[r_idx])       # (B, d/2)
         rot_s_tan = self.givens_rotation(s_tan, r_angles)    # (B, d)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)  # (B, d)
@@ -864,7 +910,9 @@ class HyperbolicRotH(nn.Module):
         # 3. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, self.entity_bias,
-            self.c, self.query_chunk_size, self.candidate_chunk_size
+            self.c, self.query_chunk_size, self.candidate_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )                                                            # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
@@ -886,6 +934,7 @@ class HyperbolicRotH(nn.Module):
 
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         s_tan = self.dropout(s_tan)
+        s_tan = self._reshape_tangent(s_tan)
         r_angles = self.rot_proj(rel_embedding[r_idx])
         rot_s_tan = self.givens_rotation(s_tan, r_angles)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)
@@ -900,6 +949,8 @@ class HyperbolicRotH(nn.Module):
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
             q_chunk_size=self.query_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )
 
 
@@ -912,7 +963,8 @@ class HyperbolicRotHRel(nn.Module):
     """
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
@@ -938,11 +990,26 @@ class HyperbolicRotHRel(nn.Module):
         # 全局旋转角（对所有 batch 项使用相同的基础旋转方向）
         self.global_rot = nn.Parameter(torch.Tensor(self.half_dim))
         nn.init.uniform_(self.global_rot, -math.pi, math.pi)
+        self.reshape_fc1 = nn.Linear(embedding_dim, embedding_dim)
+        self.reshape_fc2 = nn.Linear(embedding_dim, embedding_dim)
+        nn.init.uniform_(self.reshape_fc1.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.reshape_fc1.bias)
+        nn.init.uniform_(self.reshape_fc2.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.reshape_fc2.bias)
 
         # 关系偏置（num_relations * 2 = 前向 + 逆向）
         self.rel_bias = nn.Parameter(torch.zeros(num_relations * 2))
+        self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
+        self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
         self.dropout = nn.Dropout(dropout)
+
+    def _score_scale(self):
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
+
+    def _reshape_tangent(self, x):
+        """Residual tangent MLP that re-groups mixed features before Givens rotations."""
+        return x + self.reshape_fc2(F.relu(self.reshape_fc1(x)))
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -975,6 +1042,7 @@ class HyperbolicRotHRel(nn.Module):
         # 1. 全局 Givens 旋转主语嵌入
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)    # (B, d)
         s_tan = self.dropout(s_tan)
+        s_tan = self._reshape_tangent(s_tan)
         rot_s_tan = self.givens_rotation(s_tan, self.global_rot)  # (B, d)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)     # (B, d)
 
@@ -988,7 +1056,9 @@ class HyperbolicRotHRel(nn.Module):
         # 4. 双维分块计算与所有候选关系的双曲距离，避免 OOM
         scores = _chunked_hyperbolic_dist_score(
             query, rel_hyp, self.rel_bias,
-            self.c, self.query_chunk_size, self.candidate_chunk_size
+            self.c, self.query_chunk_size, self.candidate_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )                                                             # (B, R)
         return scores
 
@@ -1009,6 +1079,7 @@ class HyperbolicRotHRel(nn.Module):
 
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         s_tan = self.dropout(s_tan)
+        s_tan = self._reshape_tangent(s_tan)
         rot_s_tan = self.givens_rotation(s_tan, self.global_rot)
         rot_s = HyperbolicOps.exp_map_zero(rot_s_tan, self.c)
 
@@ -1020,6 +1091,8 @@ class HyperbolicRotHRel(nn.Module):
             query, rel_hyp, triplets[:, 1], self.c,
             self.candidate_chunk_size, candidate_bias=self.rel_bias,
             q_chunk_size=self.query_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )
 
 
@@ -1040,7 +1113,8 @@ class HyperbolicAttH(nn.Module):
     """
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_entities: 实体数量
@@ -1074,19 +1148,30 @@ class HyperbolicAttH(nn.Module):
         self.ref_proj = nn.Linear(embedding_dim, self.half_dim)
         self.trans_proj = nn.Linear(embedding_dim, embedding_dim)
         self.attn_proj = nn.Linear(embedding_dim, 2 * embedding_dim)
-        nn.init.xavier_uniform_(self.rot_proj.weight)
+        nn.init.uniform_(self.rot_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.rot_proj.bias)
-        nn.init.xavier_uniform_(self.ref_proj.weight)
+        nn.init.uniform_(self.ref_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.ref_proj.bias)
-        nn.init.xavier_uniform_(self.trans_proj.weight)
+        nn.init.uniform_(self.trans_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.trans_proj.bias)
-        nn.init.normal_(self.attn_proj.weight, std=0.01)
+        nn.init.uniform_(self.attn_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.attn_proj.bias)
+        self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
+        self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
+        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.interaction_proj.bias)
+        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.interaction_gate.bias)
 
         # 实体偏置
         self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
+        self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
         self.dropout = nn.Dropout(dropout)
+
+    def _score_scale(self):
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -1132,6 +1217,11 @@ class HyperbolicAttH(nn.Module):
 
         # 2. 动态 Givens 旋转与反射：θ_rot(t) = rot_proj(r(t))，θ_ref(t) = ref_proj(r(t))
         rel_emb_r = rel_embedding[r_idx]                     # (B, d)，动态关系嵌入
+        rel_gate = torch.sigmoid(
+            self.interaction_gate(torch.cat([s_tan, rel_emb_r], dim=-1))
+        )
+        rel_context = torch.tanh(self.interaction_proj(rel_emb_r))
+        s_tan = s_tan + rel_gate * rel_context
         r_rot = self.rot_proj(rel_emb_r)                     # (B, d/2)
         r_ref = self.ref_proj(rel_emb_r)                     # (B, d/2)
         rot_s = self.givens_rotation(s_tan, r_rot)           # (B, d)
@@ -1160,7 +1250,9 @@ class HyperbolicAttH(nn.Module):
         # 6. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, self.entity_bias,
-            self.c, self.query_chunk_size, self.candidate_chunk_size
+            self.c, self.query_chunk_size, self.candidate_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )                                                            # (B, N)
         scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
@@ -1184,6 +1276,11 @@ class HyperbolicAttH(nn.Module):
         s_tan = self.dropout(s_tan)
 
         rel_emb_r = rel_embedding[r_idx]
+        rel_gate = torch.sigmoid(
+            self.interaction_gate(torch.cat([s_tan, rel_emb_r], dim=-1))
+        )
+        rel_context = torch.tanh(self.interaction_proj(rel_emb_r))
+        s_tan = s_tan + rel_gate * rel_context
         r_rot = self.rot_proj(rel_emb_r)
         r_ref = self.ref_proj(rel_emb_r)
         rot_s = self.givens_rotation(s_tan, r_rot)
@@ -1208,6 +1305,8 @@ class HyperbolicAttH(nn.Module):
             query, entity_embedding, triplets[:, 2], self.c,
             self.candidate_chunk_size, candidate_bias=self.entity_bias,
             q_chunk_size=self.query_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )
 
 
@@ -1220,7 +1319,8 @@ class HyperbolicAttHRel(nn.Module):
     """
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
-                 query_chunk_size=128, candidate_chunk_size=256):
+                 query_chunk_size=128, candidate_chunk_size=256,
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
@@ -1250,12 +1350,23 @@ class HyperbolicAttHRel(nn.Module):
 
         # 注意力权重（基于 (s_tan, o_tan) → scalar）
         self.attn_weight = nn.Parameter(torch.Tensor(2 * embedding_dim))
-        nn.init.normal_(self.attn_weight, std=0.01)
+        nn.init.uniform_(self.attn_weight, -init_scale, init_scale)
+        self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
+        self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
+        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.interaction_proj.bias)
+        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
+        nn.init.zeros_(self.interaction_gate.bias)
 
         # 关系偏置（num_relations * 2 = 前向 + 逆向）
         self.rel_bias = nn.Parameter(torch.zeros(num_relations * 2))
+        self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
+        self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
         self.dropout = nn.Dropout(dropout)
+
+    def _score_scale(self):
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -1302,6 +1413,11 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
         s_tan = self.dropout(s_tan)
+        pair_input = torch.cat([s_tan, o_tan], dim=-1)
+        pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
+        # 使用主语-宾语逐维乘积建模二者交互，再由门控控制注入强度
+        pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
+        s_tan = s_tan + pair_gate * pair_context
 
         # 2. 全局旋转与反射
         rot_s = self.givens_rotation(s_tan, self.global_rot)   # (B, d)
@@ -1325,7 +1441,9 @@ class HyperbolicAttHRel(nn.Module):
 
         scores = _chunked_hyperbolic_dist_score(
             query, rel_hyp, self.rel_bias,
-            self.c, self.query_chunk_size, self.candidate_chunk_size
+            self.c, self.query_chunk_size, self.candidate_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )                                                             # (B, R)
         return scores
 
@@ -1347,6 +1465,11 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
         s_tan = self.dropout(s_tan)
+        pair_input = torch.cat([s_tan, o_tan], dim=-1)
+        pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
+        # 与 forward 保持一致：通过逐维乘积捕获 (s, o) 非线性交互
+        pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
+        s_tan = s_tan + pair_gate * pair_context
 
         rot_s = self.givens_rotation(s_tan, self.global_rot)
         ref_s = self.givens_reflection(s_tan, self.global_ref)
@@ -1365,4 +1488,6 @@ class HyperbolicAttHRel(nn.Module):
             query, rel_hyp, triplets[:, 1], self.c,
             self.candidate_chunk_size, candidate_bias=self.rel_bias,
             q_chunk_size=self.query_chunk_size,
+            score_scale=self._score_scale(),
+            score_margin=self.score_margin,
         )
