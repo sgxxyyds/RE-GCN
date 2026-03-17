@@ -29,6 +29,8 @@ import math
 
 from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 
+SCORE_SCALE_EPSILON = 1e-6
+
 
 def _chunked_hyperbolic_dist_score(
     query,
@@ -583,7 +585,7 @@ class HyperbolicMuRP(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _score_scale(self):
-        return F.softplus(self.score_scale_raw) + 1e-6
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     def forward(self, entity_embedding, rel_embedding, triplets, mode="train"):
         """
@@ -831,7 +833,7 @@ class HyperbolicRotH(nn.Module):
         # 切空间流形重塑：恢复 Givens 旋转所需的 2D 配对语义
         self.reshape_fc1 = nn.Linear(embedding_dim, embedding_dim)
         self.reshape_fc2 = nn.Linear(embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.reshape_fc1.weight)
+        nn.init.uniform_(self.reshape_fc1.weight, -init_scale, init_scale)
         nn.init.zeros_(self.reshape_fc1.bias)
         nn.init.uniform_(self.reshape_fc2.weight, -init_scale, init_scale)
         nn.init.zeros_(self.reshape_fc2.bias)
@@ -844,9 +846,10 @@ class HyperbolicRotH(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _score_scale(self):
-        return F.softplus(self.score_scale_raw) + 1e-6
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     def _reshape_tangent(self, x):
+        """Residual tangent MLP that re-groups mixed features before Givens rotations."""
         return x + self.reshape_fc2(F.relu(self.reshape_fc1(x)))
 
     @staticmethod
@@ -961,7 +964,7 @@ class HyperbolicRotHRel(nn.Module):
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
                  query_chunk_size=128, candidate_chunk_size=256,
-                 score_scale_init=1.0, score_margin_init=1.0):
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
@@ -989,9 +992,9 @@ class HyperbolicRotHRel(nn.Module):
         nn.init.uniform_(self.global_rot, -math.pi, math.pi)
         self.reshape_fc1 = nn.Linear(embedding_dim, embedding_dim)
         self.reshape_fc2 = nn.Linear(embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.reshape_fc1.weight)
+        nn.init.uniform_(self.reshape_fc1.weight, -init_scale, init_scale)
         nn.init.zeros_(self.reshape_fc1.bias)
-        nn.init.xavier_uniform_(self.reshape_fc2.weight)
+        nn.init.uniform_(self.reshape_fc2.weight, -init_scale, init_scale)
         nn.init.zeros_(self.reshape_fc2.bias)
 
         # 关系偏置（num_relations * 2 = 前向 + 逆向）
@@ -1002,9 +1005,10 @@ class HyperbolicRotHRel(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _score_scale(self):
-        return F.softplus(self.score_scale_raw) + 1e-6
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     def _reshape_tangent(self, x):
+        """Residual tangent MLP that re-groups mixed features before Givens rotations."""
         return x + self.reshape_fc2(F.relu(self.reshape_fc1(x)))
 
     @staticmethod
@@ -1150,13 +1154,13 @@ class HyperbolicAttH(nn.Module):
         nn.init.zeros_(self.ref_proj.bias)
         nn.init.uniform_(self.trans_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.trans_proj.bias)
-        nn.init.normal_(self.attn_proj.weight, std=0.01)
+        nn.init.uniform_(self.attn_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.attn_proj.bias)
         self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
         self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.interaction_proj.weight)
+        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.interaction_proj.bias)
-        nn.init.xavier_uniform_(self.interaction_gate.weight)
+        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
         nn.init.zeros_(self.interaction_gate.bias)
 
         # 实体偏置
@@ -1167,7 +1171,7 @@ class HyperbolicAttH(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _score_scale(self):
-        return F.softplus(self.score_scale_raw) + 1e-6
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -1316,7 +1320,7 @@ class HyperbolicAttHRel(nn.Module):
 
     def __init__(self, num_relations, embedding_dim, c=0.01, dropout=0.0,
                  query_chunk_size=128, candidate_chunk_size=256,
-                 score_scale_init=1.0, score_margin_init=1.0):
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
         """
         Args:
             num_relations: 关系数量（不含逆关系，对应 num_rels）
@@ -1346,12 +1350,12 @@ class HyperbolicAttHRel(nn.Module):
 
         # 注意力权重（基于 (s_tan, o_tan) → scalar）
         self.attn_weight = nn.Parameter(torch.Tensor(2 * embedding_dim))
-        nn.init.normal_(self.attn_weight, std=0.01)
+        nn.init.uniform_(self.attn_weight, -init_scale, init_scale)
         self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
         self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
-        nn.init.xavier_uniform_(self.interaction_proj.weight)
+        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.interaction_proj.bias)
-        nn.init.xavier_uniform_(self.interaction_gate.weight)
+        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
         nn.init.zeros_(self.interaction_gate.bias)
 
         # 关系偏置（num_relations * 2 = 前向 + 逆向）
@@ -1362,7 +1366,7 @@ class HyperbolicAttHRel(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _score_scale(self):
-        return F.softplus(self.score_scale_raw) + 1e-6
+        return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -1411,6 +1415,7 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = self.dropout(s_tan)
         pair_input = torch.cat([s_tan, o_tan], dim=-1)
         pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
+        # 使用主语-宾语逐维乘积建模二者交互，再由门控控制注入强度
         pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
         s_tan = s_tan + pair_gate * pair_context
 
@@ -1462,6 +1467,7 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = self.dropout(s_tan)
         pair_input = torch.cat([s_tan, o_tan], dim=-1)
         pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
+        # 与 forward 保持一致：通过逐维乘积捕获 (s, o) 非线性交互
         pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
         s_tan = s_tan + pair_gate * pair_context
 

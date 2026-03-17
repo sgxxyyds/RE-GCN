@@ -436,6 +436,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
                 score_scale_init=hyp_score_scale_init,
                 score_margin_init=hyp_score_margin_init,
             )
@@ -455,6 +456,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 dropout=input_dropout,
                 query_chunk_size=query_chunk_size,
                 candidate_chunk_size=candidate_chunk_size,
+                init_scale=hyp_init_scale,
                 score_scale_init=hyp_score_scale_init,
                 score_margin_init=hyp_score_margin_init,
             )
