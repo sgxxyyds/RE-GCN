@@ -59,13 +59,18 @@ class HyperbolicOps:
         
         Args:
             x: Input tensor of shape (..., d)
-            c: Curvature parameter (default: 0.01)
+            c: Curvature parameter (default: 0.01); may be a tensor
             eps: Small epsilon for numerical stability
             
         Returns:
             Projected tensor inside the ball
         """
-        max_norm = 1.0 / HyperbolicOps._sqrt_curvature(c) - eps
+        # Use scalar c for the norm bound to be compatible with PyTorch 1.6
+        # (torch.clamp does not accept tensor min/max before PyTorch 1.9).
+        # Gradient w.r.t. c flows through the primary computation (exp_map,
+        # mobius_add, etc.) rather than through this projection bound.
+        c_scalar = c.item() if torch.is_tensor(c) else c
+        max_norm = 1.0 / math.sqrt(c_scalar) - eps
         return HyperbolicOps.clamp_norm(x, max_norm, eps)
     
     @staticmethod
@@ -219,7 +224,9 @@ class HyperbolicOps:
         radius_tensor = radius
         if radius_tensor.dim() == x.dim() - 1:
             radius_tensor = radius_tensor.unsqueeze(-1)
-        max_radius = 1.0 / HyperbolicOps._sqrt_curvature(c) - eps
+        # Use scalar c for the clamp bound (PyTorch 1.6 compatibility).
+        c_scalar = c.item() if torch.is_tensor(c) else c
+        max_radius = 1.0 / math.sqrt(c_scalar) - eps
         radius_tensor = radius_tensor.clamp(min=eps, max=max_radius)
         norm = torch.norm(x, p=2, dim=-1, keepdim=True).clamp(min=eps)
         direction = x / norm
