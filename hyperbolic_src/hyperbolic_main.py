@@ -413,7 +413,21 @@ def run_experiment(args):
             f"Adam (欧式参数 {len(euclidean_params)} 个), lr={args.lr}"
         )
     else:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        curv_params = []
+        base_params = []
+        for n, p in model.named_parameters():
+            if n == 'log_c':
+                curv_params.append(p)
+                # 可选：打印出来看看具体抓到了哪些曲率参数
+                logger.info(f"[Curvature Param Found] {n}") 
+            else:
+                base_params.append(p)
+
+        optimizer = torch.optim.Adam([
+            {"params": base_params, "lr": args.lr},
+            {"params": curv_params, "lr": args.lr * 10}  # 让曲率以更快的速度学习
+        ], weight_decay=1e-5)
         if _use_riemannian and not GEOOPT_AVAILABLE:
             logger.warning("--use-riemannian-adam 已指定但 geoopt 未安装，回退到普通 Adam。")
         logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
@@ -557,13 +571,22 @@ def run_experiment(args):
             # Calculate epoch time
             epoch_time = time.time() - epoch_start_time
             
-            # Log epoch summary
+            # 【新增：获取当前最新的曲率值】
+            curvature_log = ""
+            if args.learn_curvature:
+                # get_curvature() 返回的是一个 tensor，用 .item() 转为 python 浮点数
+                current_c = model.get_curvature().item() 
+                curvature_log = f" | Curvature: {current_c:.6f}"
+            
+            # Log epoch summary （把 curvature_log 拼接到最后）
             epoch_summary = (f"Epoch {epoch:04d} | "
                            f"Loss: {np.mean(losses):.4f} | "
                            f"E/R/S/Rad: {np.mean(losses_e):.4f}/{np.mean(losses_r):.4f}/"
                            f"{np.mean(losses_static):.4f}/{np.mean(losses_radius):.4f} | "
                            f"Best MRR: {best_mrr:.4f} | "
-                           f"Time: {epoch_time:.1f}s")
+                           f"Time: {epoch_time:.1f}s"
+                           f"{curvature_log}")
+                           
             if epoch % args.log_interval == 0:
                 logger.info(epoch_summary)
                 if args.verbose:
