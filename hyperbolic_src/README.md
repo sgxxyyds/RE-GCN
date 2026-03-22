@@ -195,6 +195,8 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--curvature-max` | Maximum curvature for scheduling | 1e-1 |
 | `--curvature-warmup-epochs` | Warmup epochs for curvature schedule | 0 |
 | `--log-interval` | Log epoch summary every N epochs | 1 |
+| `--plus-entity-euclidean-bias` | Enable entity-specific Euclidean bias (`b_h+b_t`) in pure hyperbolic entity decoders (`murp/roth/atth`) | False |
+| `--plus-relation-specific-curvature` | Enable relation-specific curvature `c_r=softplus(θ_r)` only in decoder-side entity scoring (`murp/roth/atth`) | False |
 
 ## Encoder Comparison
 

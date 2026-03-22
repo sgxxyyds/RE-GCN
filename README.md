@@ -408,6 +408,8 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--log-file` | 将日志保存到文件 | False |
 | `--run-analysis` | 运行分析模式，记录详细统计信息 | False |
 | `--use-riemannian-adam` | 对流形参数使用 `geoopt.RiemannianAdam`，对欧式参数使用 Adam（需安装 geoopt） | False |
+| `--plus-entity-euclidean-bias` | 改进点开关（+）：在 `murp/roth/atth` 实体解码器中启用实体偏置 `b_h+b_t`（零初始化，默认关闭） | False |
+| `--plus-relation-specific-curvature` | 改进点开关（+）：在 `murp/roth/atth` 实体解码器中启用关系特异性曲率 `c_r=softplus(θ_r)`（仅解码端生效） | False |
 
 ### 优化功能（v3 更新）
 
