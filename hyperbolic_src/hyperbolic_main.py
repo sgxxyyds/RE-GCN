@@ -262,6 +262,7 @@ def run_experiment(args):
     )
     if args.learn_curvature:
         model_name += f"-cmin{args.curvature_min}-cmax{args.curvature_max}-cw{args.curvature_warmup_epochs}"
+    model_name += f"-peb{int(args.plus_entity_euclidean_bias)}-prc{int(args.plus_relation_specific_curvature)}"
     model_name += f"-gpu{args.gpu}"
     model_state_file = '../models/' + model_name
     logger.info(f"Model checkpoint: {model_state_file}")
@@ -339,6 +340,8 @@ def run_experiment(args):
         hyp_init_scale=args.hyp_init_scale,
         hyp_score_scale_init=args.hyp_score_scale_init,
         hyp_score_margin_init=args.hyp_score_margin_init,
+        use_entity_euclidean_bias=args.plus_entity_euclidean_bias,
+        use_relation_specific_curvature=args.plus_relation_specific_curvature,
         # EST enhancement parameters
         use_est=args.use_est,
         est_state_alpha=args.est_state_alpha,
@@ -393,7 +396,42 @@ def run_experiment(args):
         _geoopt = None
 
     if _use_riemannian and GEOOPT_AVAILABLE and _geoopt is not None:
-        # 分离流形参数与欧式参数，分别使用 RiemannianAdam 和 Adam
+        # 分离流形参数与欧式参数：流形参数使用 RiemannianAdam，欧式参数使用 Adam
+        class _DualOptimizer(object):
+            def __init__(self, manifold_optimizer=None, euclidean_optimizer=None):
+                self.manifold_optimizer = manifold_optimizer
+                self.euclidean_optimizer = euclidean_optimizer
+
+            def zero_grad(self):
+                if self.manifold_optimizer is not None:
+                    self.manifold_optimizer.zero_grad()
+                if self.euclidean_optimizer is not None:
+                    self.euclidean_optimizer.zero_grad()
+
+            def step(self):
+                if self.manifold_optimizer is not None:
+                    self.manifold_optimizer.step()
+                if self.euclidean_optimizer is not None:
+                    self.euclidean_optimizer.step()
+
+            def state_dict(self):
+                return {
+                    "manifold_optimizer": (
+                        self.manifold_optimizer.state_dict()
+                        if self.manifold_optimizer is not None else None
+                    ),
+                    "euclidean_optimizer": (
+                        self.euclidean_optimizer.state_dict()
+                        if self.euclidean_optimizer is not None else None
+                    ),
+                }
+
+            def load_state_dict(self, state_dict):
+                if self.manifold_optimizer is not None and state_dict.get("manifold_optimizer") is not None:
+                    self.manifold_optimizer.load_state_dict(state_dict["manifold_optimizer"])
+                if self.euclidean_optimizer is not None and state_dict.get("euclidean_optimizer") is not None:
+                    self.euclidean_optimizer.load_state_dict(state_dict["euclidean_optimizer"])
+
         manifold_params = []
         euclidean_params = []
         for name, param in model.named_parameters():
@@ -402,14 +440,23 @@ def run_experiment(args):
                 logger.info(f"  [流形参数] {name}")
             else:
                 euclidean_params.append(param)
-        optimizer = _geoopt.optim.RiemannianAdam(
-            [
-                {"params": manifold_params, "lr": args.lr},
-                {"params": euclidean_params, "lr": args.lr, "weight_decay": 1e-5},
-            ]
+        manifold_optimizer = None
+        euclidean_optimizer = None
+        if manifold_params:
+            manifold_optimizer = _geoopt.optim.RiemannianAdam(
+                [{"params": manifold_params, "lr": args.lr}]
+            )
+        if euclidean_params:
+            euclidean_optimizer = torch.optim.Adam(
+                [{"params": euclidean_params, "lr": args.lr}],
+                weight_decay=1e-5
+            )
+        optimizer = _DualOptimizer(
+            manifold_optimizer=manifold_optimizer,
+            euclidean_optimizer=euclidean_optimizer
         )
         logger.info(
-            f"Optimizer: RiemannianAdam (流形参数 {len(manifold_params)} 个) + "
+            f"Optimizer: Dual Optimizer -> RiemannianAdam (流形参数 {len(manifold_params)} 个) + "
             f"Adam (欧式参数 {len(euclidean_params)} 个), lr={args.lr}"
         )
     else:
@@ -733,6 +780,13 @@ if __name__ == '__main__':
                         help="Initial value of learnable score scale in hyperbolic decoders.")
     parser.add_argument("--hyp-score-margin-init", type=float, default=1.0,
                         help="Initial value of learnable score margin in hyperbolic decoders.")
+    parser.add_argument("--plus-entity-euclidean-bias", action='store_true', default=False,
+                        help="改进点开关（+）：为纯双曲实体解码器(murp/roth/atth)启用实体特异性欧式偏置 "
+                             "(score += b_h + b_t)。默认关闭，参数零初始化。")
+    parser.add_argument("--plus-relation-specific-curvature", action='store_true', default=False,
+                        help="改进点开关（+）：为纯双曲实体解码器(murp/roth/atth)启用关系特异性曲率 c_r=softplus(theta_r)。"
+                             "编码器仍使用全局曲率，仅解码距离使用局部曲率。"
+                             "(+ option: relation-specific decoder curvature only.)")
     
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
@@ -764,7 +818,7 @@ if __name__ == '__main__':
     # 黎曼优化器设置（Riemannian Optimizer）
     parser.add_argument("--use-riemannian-adam", action='store_true', default=False,
                         help="对流形参数（实体嵌入 dynamic_emb）使用 geoopt.RiemannianAdam，"
-                             "对欧式参数使用普通 Adam。"
+                             "对欧氏参数使用普通 Adam。"
                              "仅在 geoopt 已安装且解码器为 murp/roth/atth 时有效。"
                              "(Use geoopt.RiemannianAdam for manifold parameters, Adam for Euclidean ones.)")
 

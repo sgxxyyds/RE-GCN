@@ -32,6 +32,14 @@ from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 SCORE_SCALE_EPSILON = 1e-6
 
 
+def _softplus_inverse(x, eps=1e-12):
+    """
+    Inverse softplus for positive scalar initialization:
+        softplus(theta) = x  =>  theta = log(exp(x) - 1)
+    """
+    return math.log(max(math.exp(float(x)) - 1.0, eps))
+
+
 def _chunked_hyperbolic_dist_score(
     query,
     candidates,
@@ -41,6 +49,8 @@ def _chunked_hyperbolic_dist_score(
     c_chunk_size,
     score_scale=None,
     score_margin=0.0,
+    query_curvature=None,
+    use_hyperbolic_distance=False,
 ):
     """
     双维分块双曲距离打分辅助函数。
@@ -53,9 +63,11 @@ def _chunked_hyperbolic_dist_score(
         query:          查询向量（双曲空间），形状 (B, d)
         candidates:     候选向量（双曲空间），形状 (N, d)
         bias:           每个候选的偏置，形状 (N,)；若为 None 则不加偏置
-        c:              双曲空间曲率
+        c:              双曲空间曲率（标量）
         q_chunk_size:   query 分块大小（建议保守默认值 128）
         c_chunk_size:   candidate 分块大小（建议保守默认值 256）
+        query_curvature: 每个 query 的局部曲率，形状 (B,) 或 (B, 1)；None 表示使用全局 c
+        use_hyperbolic_distance: 若为 True，使用 d_c 距离；否则保持原有 proxy 距离
 
     Returns:
         得分矩阵，形状 (B, N)
@@ -70,6 +82,10 @@ def _chunked_hyperbolic_dist_score(
         q_end = min(q_start + q_chunk_size, B)
         q_chunk = query[q_start:q_end]       # (Bq, d)
         Bq = q_end - q_start
+        if query_curvature is not None:
+            c_q = query_curvature[q_start:q_end].reshape(Bq, 1).to(query.dtype)  # (Bq, 1)
+        else:
+            c_q = None
 
         for c_start in range(0, N, c_chunk_size):
             c_end = min(c_start + c_chunk_size, N)
@@ -80,16 +96,39 @@ def _chunked_hyperbolic_dist_score(
             q_exp = q_chunk.unsqueeze(1).expand(Bq, Cq, d).reshape(Bq * Cq, d)
             c_exp = c_chunk.unsqueeze(0).expand(Bq, Cq, d).reshape(Bq * Cq, d)
 
-            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)   # (Bq*Cq, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)  # (Bq, Cq)
-
-            block = score_margin - dist_sq
+            if use_hyperbolic_distance:
+                if c_q is not None:
+                    c_eff = c_q.unsqueeze(1).expand(Bq, Cq, 1).reshape(Bq * Cq, 1)
+                    sqrt_c = torch.sqrt(c_eff + SCORE_SCALE_EPSILON)
+                    x_sq = torch.sum(q_exp * q_exp, dim=-1, keepdim=True)
+                    y_sq = torch.sum(c_exp * c_exp, dim=-1, keepdim=True)
+                    xy = torch.sum(q_exp * c_exp, dim=-1, keepdim=True)
+                    num = (1 - 2 * c_eff * xy + c_eff * y_sq) * (-q_exp) + (1 - c_eff * x_sq) * c_exp
+                    denom = 1 - 2 * c_eff * xy + (c_eff ** 2) * x_sq * y_sq
+                    diff = num / (denom + SCORE_SCALE_EPSILON)
+                    diff_norm = torch.norm(diff, p=2, dim=-1, keepdim=True).clamp(min=SCORE_SCALE_EPSILON)
+                    max_norm = 1.0 / (sqrt_c + SCORE_SCALE_EPSILON) - SCORE_SCALE_EPSILON
+                    diff_norm = torch.min(diff_norm, max_norm)
+                    dist = (2.0 / (sqrt_c + SCORE_SCALE_EPSILON)) * torch.atanh(
+                        (sqrt_c * diff_norm).clamp(max=1.0 - SCORE_SCALE_EPSILON)
+                    )
+                    dist = dist.reshape(Bq, Cq)
+                else:
+                    dist = HyperbolicOps.hyperbolic_distance(q_exp, c_exp, c).reshape(Bq, Cq)
+                block = score_margin - dist
+            else:
+                diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)   # (Bq*Cq, d)
+                dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)  # (Bq, Cq)
+                block = score_margin - dist_sq
             if score_scale is not None:
                 block = score_scale * block
             if bias is not None:
                 block = block + bias[c_start:c_end].unsqueeze(0)
 
             scores[q_start:q_end, c_start:c_end] = block
+            if not use_hyperbolic_distance:
+                del diff, dist_sq
+            del q_exp, c_exp
 
     return scores
 
@@ -105,6 +144,8 @@ def _chunked_hyperbolic_ce_loss(
     q_chunk_size=None,
     score_scale=None,
     score_margin=0.0,
+    query_curvature=None,
+    use_hyperbolic_distance=False,
 ):
     """
     双重分块双曲距离交叉熵损失（训练专用）。
@@ -121,11 +162,13 @@ def _chunked_hyperbolic_ce_loss(
         query:          查询向量（双曲空间），形状 (B, d)
         candidates:     候选向量（双曲空间），形状 (N, d)
         target:         目标索引，形状 (B,)
-        c:              双曲空间曲率
+        c:              双曲空间曲率（标量）
         c_chunk_size:   candidate 分块大小
         candidate_bias: 每个 candidate 的偏置，形状 (N,)；若为 None 则不加
         query_bias:     每个 query 的偏置，形状 (B,)；该值在 CE 中抵消，接受但不使用
         q_chunk_size:   query 分块大小；若为 None 则不对 query 维度分块
+        query_curvature: 每个 query 的局部曲率，形状 (B,) 或 (B, 1)；None 表示使用全局 c
+        use_hyperbolic_distance: 若为 True，使用 d_c 距离；否则保持原有 proxy 距离
 
     Returns:
         标量 loss，等价于 F.cross_entropy(full_logits, target)
@@ -148,6 +191,10 @@ def _chunked_hyperbolic_ce_loss(
 
         q_chunk = query[q_start:q_end]           # (Bq, d)
         t_chunk = target[q_start:q_end]           # (Bq,)
+        if query_curvature is not None:
+            c_q = query_curvature[q_start:q_end].reshape(Bq, 1).to(query.dtype)  # (Bq, 1)
+        else:
+            c_q = None
 
         # 初始化当前 query chunk 的累积量
         target_logits = q_chunk.new_zeros(Bq)
@@ -161,12 +208,35 @@ def _chunked_hyperbolic_ce_loss(
             # 计算当前 query chunk 与 candidate chunk 的双曲距离得分
             q_exp = q_chunk.unsqueeze(1).expand(Bq, Cq, d).reshape(Bq * Cq, d)
             c_exp = c_chunk.unsqueeze(0).expand(Bq, Cq, d).reshape(Bq * Cq, d)
-            diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)        # (Bq*Cq, d)
-            dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)   # (Bq, Cq)
-            logits_chunk = score_margin - dist_sq                      # (Bq, Cq)
+            if use_hyperbolic_distance:
+                if c_q is not None:
+                    c_eff = c_q.unsqueeze(1).expand(Bq, Cq, 1).reshape(Bq * Cq, 1)
+                    sqrt_c = torch.sqrt(c_eff + SCORE_SCALE_EPSILON)
+                    x_sq = torch.sum(q_exp * q_exp, dim=-1, keepdim=True)
+                    y_sq = torch.sum(c_exp * c_exp, dim=-1, keepdim=True)
+                    xy = torch.sum(q_exp * c_exp, dim=-1, keepdim=True)
+                    num = (1 - 2 * c_eff * xy + c_eff * y_sq) * (-q_exp) + (1 - c_eff * x_sq) * c_exp
+                    denom = 1 - 2 * c_eff * xy + (c_eff ** 2) * x_sq * y_sq
+                    diff = num / (denom + SCORE_SCALE_EPSILON)
+                    diff_norm = torch.norm(diff, p=2, dim=-1, keepdim=True).clamp(min=SCORE_SCALE_EPSILON)
+                    max_norm = 1.0 / (sqrt_c + SCORE_SCALE_EPSILON) - SCORE_SCALE_EPSILON
+                    diff_norm = torch.min(diff_norm, max_norm)
+                    dist = (2.0 / (sqrt_c + SCORE_SCALE_EPSILON)) * torch.atanh(
+                        (sqrt_c * diff_norm).clamp(max=1.0 - SCORE_SCALE_EPSILON)
+                    )
+                    logits_chunk = score_margin - dist.reshape(Bq, Cq)
+                else:
+                    dist = HyperbolicOps.hyperbolic_distance(q_exp, c_exp, c).reshape(Bq, Cq)
+                    logits_chunk = score_margin - dist
+            else:
+                diff = HyperbolicOps.mobius_add(-q_exp, c_exp, c)        # (Bq*Cq, d)
+                dist_sq = torch.sum(diff ** 2, dim=-1).reshape(Bq, Cq)   # (Bq, Cq)
+                logits_chunk = score_margin - dist_sq                      # (Bq, Cq)
             if score_scale is not None:
                 logits_chunk = score_scale * logits_chunk
-            del q_exp, c_exp, diff, dist_sq
+            if not use_hyperbolic_distance:
+                del diff, dist_sq
+            del q_exp, c_exp
 
             if candidate_bias is not None:
                 logits_chunk = logits_chunk + candidate_bias[c_start:c_end].unsqueeze(0)
@@ -545,7 +615,8 @@ class HyperbolicMuRP(nn.Module):
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
                  query_chunk_size=128, candidate_chunk_size=256,
-                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0,
+                 use_entity_euclidean_bias=False, use_relation_specific_curvature=False):
         """
         Args:
             num_entities: 实体数量
@@ -564,6 +635,9 @@ class HyperbolicMuRP(nn.Module):
         # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+        self.num_relations = num_relations
+        self.use_entity_euclidean_bias = use_entity_euclidean_bias
+        self.use_relation_specific_curvature = use_relation_specific_curvature
 
         # 动态关系投影层（Dynamic Relation Projection）：
         # 将时序编码器输出的动态关系嵌入 r(t) 映射为对角旋转向量与切空间平移向量
@@ -576,8 +650,16 @@ class HyperbolicMuRP(nn.Module):
         nn.init.uniform_(self.trans_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.trans_proj.bias)
 
-        # 实体偏置
-        self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        # 实体偏置（可选，严格零初始化）
+        if use_entity_euclidean_bias:
+            self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        else:
+            self.register_parameter("entity_bias", None)
+        if use_relation_specific_curvature:
+            theta_init = _softplus_inverse(c)
+            self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+        else:
+            self.register_parameter("rel_curvature_raw", None)
         # 分布校准：score = scale * (margin - dist)
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
@@ -586,6 +668,14 @@ class HyperbolicMuRP(nn.Module):
 
     def _score_scale(self):
         return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
+
+    def _relation_curvature(self, r_idx):
+        if self.rel_curvature_raw is None:
+            return None
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        return rel_c
 
     def forward(self, entity_embedding, rel_embedding, triplets, mode="train"):
         """
@@ -619,16 +709,20 @@ class HyperbolicMuRP(nn.Module):
         rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)    # (B, d)
+        rel_c = self._relation_curvature(r_idx)
 
         # 3. 双维分块计算与所有候选实体的双曲距离，避免 OOM
-        cand_bias = self.entity_bias                              # (N,)
+        cand_bias = self.entity_bias
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, cand_bias,
             self.c, self.query_chunk_size, self.candidate_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )                                                         # (B, N)
-        scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
+        if self.entity_bias is not None:
+            scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
     def loss(self, entity_embedding, rel_embedding, triplets):
@@ -657,6 +751,7 @@ class HyperbolicMuRP(nn.Module):
         rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
+        rel_c = self._relation_curvature(r_idx)
 
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
@@ -664,6 +759,8 @@ class HyperbolicMuRP(nn.Module):
             q_chunk_size=self.query_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )
 
 
@@ -795,7 +892,8 @@ class HyperbolicRotH(nn.Module):
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
                  query_chunk_size=128, candidate_chunk_size=256,
-                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0,
+                 use_entity_euclidean_bias=False, use_relation_specific_curvature=False):
         """
         Args:
             num_entities: 实体数量
@@ -819,6 +917,9 @@ class HyperbolicRotH(nn.Module):
         # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+        self.num_relations = num_relations
+        self.use_entity_euclidean_bias = use_entity_euclidean_bias
+        self.use_relation_specific_curvature = use_relation_specific_curvature
 
         # 动态关系投影层（Dynamic Relation Projection）：
         # 将时序编码器输出的动态关系嵌入 r(t) 映射为 Givens 旋转角与切空间平移向量
@@ -838,8 +939,16 @@ class HyperbolicRotH(nn.Module):
         nn.init.uniform_(self.reshape_fc2.weight, -init_scale, init_scale)
         nn.init.zeros_(self.reshape_fc2.bias)
 
-        # 实体偏置
-        self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        # 实体偏置（可选，严格零初始化）
+        if use_entity_euclidean_bias:
+            self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        else:
+            self.register_parameter("entity_bias", None)
+        if use_relation_specific_curvature:
+            theta_init = _softplus_inverse(c)
+            self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+        else:
+            self.register_parameter("rel_curvature_raw", None)
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
@@ -847,6 +956,14 @@ class HyperbolicRotH(nn.Module):
 
     def _score_scale(self):
         return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
+
+    def _relation_curvature(self, r_idx):
+        if self.rel_curvature_raw is None:
+            return None
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        return rel_c
 
     def _reshape_tangent(self, x):
         """Residual tangent MLP that re-groups mixed features before Givens rotations."""
@@ -906,6 +1023,7 @@ class HyperbolicRotH(nn.Module):
         rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)  # (B, d)
+        rel_c = self._relation_curvature(r_idx)
 
         # 3. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
@@ -913,8 +1031,11 @@ class HyperbolicRotH(nn.Module):
             self.c, self.query_chunk_size, self.candidate_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )                                                            # (B, N)
-        scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
+        if self.entity_bias is not None:
+            scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
     def loss(self, entity_embedding, rel_embedding, triplets):
@@ -944,6 +1065,7 @@ class HyperbolicRotH(nn.Module):
         rot_s = HyperbolicOps.project_to_ball(rot_s, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(rot_s, t_r, self.c)
+        rel_c = self._relation_curvature(r_idx)
 
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
@@ -951,6 +1073,8 @@ class HyperbolicRotH(nn.Module):
             q_chunk_size=self.query_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )
 
 
@@ -1114,7 +1238,8 @@ class HyperbolicAttH(nn.Module):
 
     def __init__(self, num_entities, num_relations, embedding_dim, c=0.01, dropout=0.0,
                  query_chunk_size=128, candidate_chunk_size=256,
-                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0):
+                 init_scale=1e-3, score_scale_init=1.0, score_margin_init=1.0,
+                 use_entity_euclidean_bias=False, use_relation_specific_curvature=False):
         """
         Args:
             num_entities: 实体数量
@@ -1137,6 +1262,9 @@ class HyperbolicAttH(nn.Module):
         # 双维分块：同时对 query 和 candidate 切块，峰值张量从 B×N×d 降至 Bq×Cq×d
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+        self.num_relations = num_relations
+        self.use_entity_euclidean_bias = use_entity_euclidean_bias
+        self.use_relation_specific_curvature = use_relation_specific_curvature
 
         # 动态关系投影层（Dynamic Relation Projection）：
         # 将时序编码器输出的动态关系嵌入 r(t) 分别映射为旋转角、反射角、切空间平移与注意力权重向量
@@ -1163,8 +1291,16 @@ class HyperbolicAttH(nn.Module):
         nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
         nn.init.zeros_(self.interaction_gate.bias)
 
-        # 实体偏置
-        self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        # 实体偏置（可选，严格零初始化）
+        if use_entity_euclidean_bias:
+            self.entity_bias = nn.Parameter(torch.zeros(num_entities))
+        else:
+            self.register_parameter("entity_bias", None)
+        if use_relation_specific_curvature:
+            theta_init = _softplus_inverse(c)
+            self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+        else:
+            self.register_parameter("rel_curvature_raw", None)
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
@@ -1172,6 +1308,14 @@ class HyperbolicAttH(nn.Module):
 
     def _score_scale(self):
         return F.softplus(self.score_scale_raw) + SCORE_SCALE_EPSILON
+
+    def _relation_curvature(self, r_idx):
+        if self.rel_curvature_raw is None:
+            return None
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        return rel_c
 
     @staticmethod
     def givens_rotation(x, angles):
@@ -1246,6 +1390,7 @@ class HyperbolicAttH(nn.Module):
         mixed_hyp = HyperbolicOps.project_to_ball(mixed_hyp, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)   # (B, d)
+        rel_c = self._relation_curvature(r_idx)
 
         # 6. 双维分块计算与所有候选实体的双曲距离
         scores = _chunked_hyperbolic_dist_score(
@@ -1253,8 +1398,11 @@ class HyperbolicAttH(nn.Module):
             self.c, self.query_chunk_size, self.candidate_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )                                                            # (B, N)
-        scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
+        if self.entity_bias is not None:
+            scores = scores + self.entity_bias[triplets[:, 0]].unsqueeze(1)
         return scores
 
     def loss(self, entity_embedding, rel_embedding, triplets):
@@ -1300,6 +1448,7 @@ class HyperbolicAttH(nn.Module):
         mixed_hyp = HyperbolicOps.project_to_ball(mixed_hyp, self.c)
         t_r = HyperbolicOps.project_to_ball(t_r, self.c)
         query = HyperbolicOps.mobius_add(mixed_hyp, t_r, self.c)
+        rel_c = self._relation_curvature(r_idx)
 
         return _chunked_hyperbolic_ce_loss(
             query, entity_embedding, triplets[:, 2], self.c,
@@ -1307,6 +1456,8 @@ class HyperbolicAttH(nn.Module):
             q_chunk_size=self.query_chunk_size,
             score_scale=self._score_scale(),
             score_margin=self.score_margin,
+            query_curvature=rel_c,
+            use_hyperbolic_distance=self.use_relation_specific_curvature,
         )
 
 

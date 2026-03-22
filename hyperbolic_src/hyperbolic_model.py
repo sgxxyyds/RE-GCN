@@ -184,6 +184,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  num_heads=4,
                  query_chunk_size=128, candidate_chunk_size=256,
                  hyp_init_scale=1e-3, hyp_score_scale_init=1.0, hyp_score_margin_init=1.0,
+                 use_entity_euclidean_bias=False, use_relation_specific_curvature=False,
                  use_est=False, est_state_alpha=0.2,
                  est_encoder="gru", use_time_aware_negative=False):
         """
@@ -231,6 +232,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             hyp_init_scale: Small init range for hyperbolic decoder projection layers
             hyp_score_scale_init: Initial value for learnable hyperbolic score scale
             hyp_score_margin_init: Initial value for learnable hyperbolic score margin
+            use_entity_euclidean_bias: Enable entity-specific Euclidean bias in pure hyperbolic entity decoders
+            use_relation_specific_curvature: Enable relation-specific curvature in pure hyperbolic entity decoders
             use_est: Enable EST-inspired enhancements (H-PES, ETNR, QCHHE, TANS). Default False.
             est_state_alpha: EMA rate for persistent fast state (H-PES). Default 0.2.
             est_encoder: Temporal backbone for QCHHE: 'gru' or 'transformer'. Default 'gru'.
@@ -267,6 +270,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.num_heads = num_heads
         self.query_chunk_size = query_chunk_size
         self.candidate_chunk_size = candidate_chunk_size
+        self.use_entity_euclidean_bias = use_entity_euclidean_bias
+        self.use_relation_specific_curvature = use_relation_specific_curvature
 
         # ============ EST Enhancement Flags ============
         self.use_est = use_est
@@ -413,6 +418,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 init_scale=hyp_init_scale,
                 score_scale_init=hyp_score_scale_init,
                 score_margin_init=hyp_score_margin_init,
+                use_entity_euclidean_bias=use_entity_euclidean_bias,
+                use_relation_specific_curvature=use_relation_specific_curvature,
             )
             self.rdecoder = HyperbolicMuRPRel(
                 num_rels, h_dim, c=c,
@@ -430,6 +437,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 init_scale=hyp_init_scale,
                 score_scale_init=hyp_score_scale_init,
                 score_margin_init=hyp_score_margin_init,
+                use_entity_euclidean_bias=use_entity_euclidean_bias,
+                use_relation_specific_curvature=use_relation_specific_curvature,
             )
             self.rdecoder = HyperbolicRotHRel(
                 num_rels, h_dim, c=c,
@@ -450,6 +459,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 init_scale=hyp_init_scale,
                 score_scale_init=hyp_score_scale_init,
                 score_margin_init=hyp_score_margin_init,
+                use_entity_euclidean_bias=use_entity_euclidean_bias,
+                use_relation_specific_curvature=use_relation_specific_curvature,
             )
             self.rdecoder = HyperbolicAttHRel(
                 num_rels, h_dim, c=c,
