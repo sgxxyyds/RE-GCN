@@ -32,6 +32,14 @@ from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 SCORE_SCALE_EPSILON = 1e-6
 
 
+def _softplus_inverse(x, eps=1e-12):
+    """
+    Inverse softplus for positive scalar initialization:
+        softplus(theta) = x  =>  theta = log(exp(x) - 1)
+    """
+    return math.log(max(math.exp(float(x)) - 1.0, eps))
+
+
 def _chunked_hyperbolic_dist_score(
     query,
     candidates,
@@ -118,6 +126,9 @@ def _chunked_hyperbolic_dist_score(
                 block = block + bias[c_start:c_end].unsqueeze(0)
 
             scores[q_start:q_end, c_start:c_end] = block
+            if not use_hyperbolic_distance:
+                del diff, dist_sq
+            del q_exp, c_exp
 
     return scores
 
@@ -223,6 +234,8 @@ def _chunked_hyperbolic_ce_loss(
                 logits_chunk = score_margin - dist_sq                      # (Bq, Cq)
             if score_scale is not None:
                 logits_chunk = score_scale * logits_chunk
+            if not use_hyperbolic_distance:
+                del diff, dist_sq
             del q_exp, c_exp
 
             if candidate_bias is not None:
@@ -643,7 +656,7 @@ class HyperbolicMuRP(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = math.log(math.expm1(float(c)))
+            theta_init = _softplus_inverse(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
         else:
             self.register_parameter("rel_curvature_raw", None)
@@ -659,8 +672,9 @@ class HyperbolicMuRP(nn.Module):
     def _relation_curvature(self, r_idx):
         if self.rel_curvature_raw is None:
             return None
-        rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[rel_idx]) + SCORE_SCALE_EPSILON
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
         return rel_c
 
     def forward(self, entity_embedding, rel_embedding, triplets, mode="train"):
@@ -698,7 +712,7 @@ class HyperbolicMuRP(nn.Module):
         rel_c = self._relation_curvature(r_idx)
 
         # 3. 双维分块计算与所有候选实体的双曲距离，避免 OOM
-        cand_bias = self.entity_bias if self.entity_bias is not None else None
+        cand_bias = self.entity_bias
         scores = _chunked_hyperbolic_dist_score(
             query, entity_embedding, cand_bias,
             self.c, self.query_chunk_size, self.candidate_chunk_size,
@@ -931,7 +945,7 @@ class HyperbolicRotH(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = math.log(math.expm1(float(c)))
+            theta_init = _softplus_inverse(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
         else:
             self.register_parameter("rel_curvature_raw", None)
@@ -946,8 +960,9 @@ class HyperbolicRotH(nn.Module):
     def _relation_curvature(self, r_idx):
         if self.rel_curvature_raw is None:
             return None
-        rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[rel_idx]) + SCORE_SCALE_EPSILON
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
         return rel_c
 
     def _reshape_tangent(self, x):
@@ -1282,7 +1297,7 @@ class HyperbolicAttH(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = math.log(math.expm1(float(c)))
+            theta_init = _softplus_inverse(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
         else:
             self.register_parameter("rel_curvature_raw", None)
@@ -1297,8 +1312,9 @@ class HyperbolicAttH(nn.Module):
     def _relation_curvature(self, r_idx):
         if self.rel_curvature_raw is None:
             return None
-        rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[rel_idx]) + SCORE_SCALE_EPSILON
+        # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
+        base_rel_idx = torch.remainder(r_idx, self.num_relations)
+        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
         return rel_c
 
     @staticmethod

@@ -414,6 +414,24 @@ def run_experiment(args):
                 if self.euclidean_optimizer is not None:
                     self.euclidean_optimizer.step()
 
+            def state_dict(self):
+                return {
+                    "manifold_optimizer": (
+                        self.manifold_optimizer.state_dict()
+                        if self.manifold_optimizer is not None else None
+                    ),
+                    "euclidean_optimizer": (
+                        self.euclidean_optimizer.state_dict()
+                        if self.euclidean_optimizer is not None else None
+                    ),
+                }
+
+            def load_state_dict(self, state_dict):
+                if self.manifold_optimizer is not None and state_dict.get("manifold_optimizer") is not None:
+                    self.manifold_optimizer.load_state_dict(state_dict["manifold_optimizer"])
+                if self.euclidean_optimizer is not None and state_dict.get("euclidean_optimizer") is not None:
+                    self.euclidean_optimizer.load_state_dict(state_dict["euclidean_optimizer"])
+
         manifold_params = []
         euclidean_params = []
         for name, param in model.named_parameters():
@@ -767,7 +785,8 @@ if __name__ == '__main__':
                              "(score += b_h + b_t)。默认关闭，参数零初始化。")
     parser.add_argument("--plus-relation-specific-curvature", action='store_true', default=False,
                         help="改进点开关（+）：为纯双曲实体解码器(murp/roth/atth)启用关系特异性曲率 c_r=softplus(theta_r)。"
-                             "编码器仍使用全局曲率，仅解码距离使用局部曲率。")
+                             "编码器仍使用全局曲率，仅解码距离使用局部曲率。"
+                             "(+ option: relation-specific decoder curvature only.)")
     
     # Sequence settings
     parser.add_argument("--train-history-len", type=int, default=10, help="Training history length")
@@ -799,7 +818,7 @@ if __name__ == '__main__':
     # 黎曼优化器设置（Riemannian Optimizer）
     parser.add_argument("--use-riemannian-adam", action='store_true', default=False,
                         help="对流形参数（实体嵌入 dynamic_emb）使用 geoopt.RiemannianAdam，"
-                             "对欧式参数使用普通 Adam。"
+                             "对欧氏参数使用普通 Adam。"
                              "仅在 geoopt 已安装且解码器为 murp/roth/atth 时有效。"
                              "(Use geoopt.RiemannianAdam for manifold parameters, Adam for Euclidean ones.)")
 
