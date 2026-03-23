@@ -677,6 +677,19 @@ class HyperbolicRecurrentRGCN(nn.Module):
             self.curvature_min = curvature_min
         if curvature_max is not None:
             self.curvature_max = curvature_max
+
+    def set_relation_curvature_bounds(self, curvature_max=None):
+        """
+        Update relation-specific curvature upper bound for decoder-side scheduling.
+
+        Args:
+            curvature_max: Optional new maximum bound for relation curvature warmup.
+        """
+        decoder = getattr(self, "decoder_ob", None)
+        if decoder is None:
+            return
+        if hasattr(decoder, "set_relation_curvature_bounds"):
+            decoder.set_relation_curvature_bounds(curvature_max=curvature_max)
     
     def _init_hyperbolic_embeddings(self):
         """

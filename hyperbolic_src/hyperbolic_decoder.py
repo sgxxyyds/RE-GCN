@@ -30,6 +30,9 @@ import math
 from hyperbolic_src.hyperbolic_ops import HyperbolicOps
 
 SCORE_SCALE_EPSILON = 1e-6
+REL_CURVATURE_EPSILON = 1e-5
+REL_CURVATURE_SAFETY_MARGIN = 0.999
+REL_CURVATURE_INIT_RATIO = 0.95
 
 
 def _softplus_inverse(x, eps=1e-12):
@@ -38,6 +41,28 @@ def _softplus_inverse(x, eps=1e-12):
         softplus(theta) = x  =>  theta = log(exp(x) - 1)
     """
     return math.log(max(math.exp(float(x)) - 1.0, eps))
+
+
+def _relation_curvature_theta_init(global_c):
+    """
+    Deterministic initialization for relation curvature logits.
+    Keep initial softplus(theta_r) slightly below global curvature to avoid
+    early-epoch metric oscillation.
+    """
+    target_c = max(float(global_c) * REL_CURVATURE_INIT_RATIO, REL_CURVATURE_EPSILON)
+    return _softplus_inverse(target_c)
+
+
+def _clamp_relation_curvature(rel_c_raw, global_c, warmup_max=None):
+    """Apply safe two-sided clamp for relation curvature."""
+    global_c_t = global_c if torch.is_tensor(global_c) else rel_c_raw.new_tensor(float(global_c))
+    global_c_t = global_c_t.to(rel_c_raw.device).to(rel_c_raw.dtype)
+    upper = REL_CURVATURE_SAFETY_MARGIN * global_c_t
+    if warmup_max is not None:
+        upper = torch.min(upper, rel_c_raw.new_tensor(float(warmup_max)))
+    rel_c = torch.min(rel_c_raw, upper)
+    rel_c = torch.max(rel_c, rel_c_raw.new_tensor(REL_CURVATURE_EPSILON))
+    return rel_c
 
 
 def _chunked_hyperbolic_dist_score(
@@ -656,10 +681,12 @@ class HyperbolicMuRP(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = _softplus_inverse(c)
+            theta_init = _relation_curvature_theta_init(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+            self.rel_curvature_max = float(c)
         else:
             self.register_parameter("rel_curvature_raw", None)
+            self.rel_curvature_max = None
         # 分布校准：score = scale * (margin - dist)
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
@@ -674,8 +701,13 @@ class HyperbolicMuRP(nn.Module):
             return None
         # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
         base_rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        rel_c_raw = F.softplus(self.rel_curvature_raw[base_rel_idx])
+        rel_c = _clamp_relation_curvature(rel_c_raw, self.c, self.rel_curvature_max)
         return rel_c
+
+    def set_relation_curvature_bounds(self, curvature_max=None):
+        if curvature_max is not None:
+            self.rel_curvature_max = float(curvature_max)
 
     def forward(self, entity_embedding, rel_embedding, triplets, mode="train"):
         """
@@ -945,10 +977,12 @@ class HyperbolicRotH(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = _softplus_inverse(c)
+            theta_init = _relation_curvature_theta_init(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+            self.rel_curvature_max = float(c)
         else:
             self.register_parameter("rel_curvature_raw", None)
+            self.rel_curvature_max = None
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
@@ -962,8 +996,13 @@ class HyperbolicRotH(nn.Module):
             return None
         # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
         base_rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        rel_c_raw = F.softplus(self.rel_curvature_raw[base_rel_idx])
+        rel_c = _clamp_relation_curvature(rel_c_raw, self.c, self.rel_curvature_max)
         return rel_c
+
+    def set_relation_curvature_bounds(self, curvature_max=None):
+        if curvature_max is not None:
+            self.rel_curvature_max = float(curvature_max)
 
     def _reshape_tangent(self, x):
         """Residual tangent MLP that re-groups mixed features before Givens rotations."""
@@ -1297,10 +1336,12 @@ class HyperbolicAttH(nn.Module):
         else:
             self.register_parameter("entity_bias", None)
         if use_relation_specific_curvature:
-            theta_init = _softplus_inverse(c)
+            theta_init = _relation_curvature_theta_init(c)
             self.rel_curvature_raw = nn.Parameter(torch.full((num_relations,), theta_init))
+            self.rel_curvature_max = float(c)
         else:
             self.register_parameter("rel_curvature_raw", None)
+            self.rel_curvature_max = None
         self.score_scale_raw = nn.Parameter(torch.tensor(float(score_scale_init)))
         self.score_margin = nn.Parameter(torch.tensor(float(score_margin_init)))
 
@@ -1314,8 +1355,13 @@ class HyperbolicAttH(nn.Module):
             return None
         # 关系索引包含正反两个方向（num_rels*2）；映射回基础关系索引以共享 c_r。
         base_rel_idx = torch.remainder(r_idx, self.num_relations)
-        rel_c = F.softplus(self.rel_curvature_raw[base_rel_idx]) + SCORE_SCALE_EPSILON
+        rel_c_raw = F.softplus(self.rel_curvature_raw[base_rel_idx])
+        rel_c = _clamp_relation_curvature(rel_c_raw, self.c, self.rel_curvature_max)
         return rel_c
+
+    def set_relation_curvature_bounds(self, curvature_max=None):
+        if curvature_max is not None:
+            self.rel_curvature_max = float(curvature_max)
 
     @staticmethod
     def givens_rotation(x, angles):
