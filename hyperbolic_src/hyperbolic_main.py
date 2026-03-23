@@ -528,8 +528,12 @@ def run_experiment(args):
                     warmup_progress = (epoch + 1) / args.curvature_warmup_epochs
                     current_max = initial_curvature + (args.curvature_max - initial_curvature) * warmup_progress
                     model.set_curvature_bounds(curvature_max=current_max)
+                    if args.plus_relation_specific_curvature:
+                        model.set_relation_curvature_bounds(curvature_max=current_max)
                 elif not warmup_complete:
                     model.set_curvature_bounds(curvature_max=args.curvature_max)
+                    if args.plus_relation_specific_curvature:
+                        model.set_relation_curvature_bounds(curvature_max=args.curvature_max)
                     warmup_complete = True
 
             for train_sample_num in tqdm(idx, desc=f"Epoch {epoch}", disable=not args.verbose):
