@@ -46,17 +46,38 @@ def _softplus_inverse(x, eps=1e-12):
 def _relation_curvature_theta_init(global_c):
     """
     Deterministic initialization for relation curvature logits.
+
+    Args:
+        global_c: Current global curvature reference.
+
+    Returns:
+        Theta initialization value (logit) such that
+        softplus(theta_r) ≈ REL_CURVATURE_INIT_RATIO * global_c.
+
     Keep initial softplus(theta_r) slightly below global curvature to avoid
     early-epoch metric oscillation.
     """
+    if torch.is_tensor(global_c):
+        global_c = global_c.detach().item()
     target_c = max(float(global_c) * REL_CURVATURE_INIT_RATIO, REL_CURVATURE_EPSILON)
     return _softplus_inverse(target_c)
 
 
 def _clamp_relation_curvature(rel_c_raw, global_c, warmup_max=None):
-    """Apply safe two-sided clamp for relation curvature."""
+    """
+    Apply safe two-sided clamp for relation curvature.
+
+    Args:
+        rel_c_raw: Positive raw relation curvature after softplus.
+        global_c: Current global curvature (tensor or float).
+        warmup_max: Optional warmup upper bound from scheduler.
+
+    Returns:
+        Clamped relation curvature:
+            max(REL_CURVATURE_EPSILON, min(rel_c_raw, min(warmup_max, 0.999 * global_c))).
+    """
     global_c_t = global_c if torch.is_tensor(global_c) else rel_c_raw.new_tensor(float(global_c))
-    global_c_t = global_c_t.to(rel_c_raw.device).to(rel_c_raw.dtype)
+    global_c_t = global_c_t.to(rel_c_raw.device, rel_c_raw.dtype)
     upper = REL_CURVATURE_SAFETY_MARGIN * global_c_t
     if warmup_max is not None:
         upper = torch.min(upper, rel_c_raw.new_tensor(float(warmup_max)))
