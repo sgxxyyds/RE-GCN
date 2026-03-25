@@ -1344,12 +1344,6 @@ class HyperbolicAttH(nn.Module):
         nn.init.zeros_(self.trans_proj.bias)
         nn.init.uniform_(self.attn_proj.weight, -init_scale, init_scale)
         nn.init.zeros_(self.attn_proj.bias)
-        self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
-        self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
-        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
-        nn.init.zeros_(self.interaction_proj.bias)
-        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
-        nn.init.zeros_(self.interaction_gate.bias)
 
         # 实体偏置（可选，严格零初始化）
         if use_entity_euclidean_bias:
@@ -1428,11 +1422,6 @@ class HyperbolicAttH(nn.Module):
 
         # 2. 动态 Givens 旋转与反射：θ_rot(t) = rot_proj(r(t))，θ_ref(t) = ref_proj(r(t))
         rel_emb_r = rel_embedding[r_idx]                     # (B, d)，动态关系嵌入
-        rel_gate = torch.sigmoid(
-            self.interaction_gate(torch.cat([s_tan, rel_emb_r], dim=-1))
-        )
-        rel_context = torch.tanh(self.interaction_proj(rel_emb_r))
-        s_tan = s_tan + rel_gate * rel_context
         r_rot = self.rot_proj(rel_emb_r)                     # (B, d/2)
         r_ref = self.ref_proj(rel_emb_r)                     # (B, d/2)
         rot_s = self.givens_rotation(s_tan, r_rot)           # (B, d)
@@ -1491,11 +1480,6 @@ class HyperbolicAttH(nn.Module):
         s_tan = self.dropout(s_tan)
 
         rel_emb_r = rel_embedding[r_idx]
-        rel_gate = torch.sigmoid(
-            self.interaction_gate(torch.cat([s_tan, rel_emb_r], dim=-1))
-        )
-        rel_context = torch.tanh(self.interaction_proj(rel_emb_r))
-        s_tan = s_tan + rel_gate * rel_context
         r_rot = self.rot_proj(rel_emb_r)
         r_ref = self.ref_proj(rel_emb_r)
         rot_s = self.givens_rotation(s_tan, r_rot)
@@ -1569,12 +1553,6 @@ class HyperbolicAttHRel(nn.Module):
         # 注意力权重（基于 (s_tan, o_tan) → scalar）
         self.attn_weight = nn.Parameter(torch.Tensor(2 * embedding_dim))
         nn.init.uniform_(self.attn_weight, -init_scale, init_scale)
-        self.interaction_proj = nn.Linear(embedding_dim, embedding_dim)
-        self.interaction_gate = nn.Linear(2 * embedding_dim, embedding_dim)
-        nn.init.uniform_(self.interaction_proj.weight, -init_scale, init_scale)
-        nn.init.zeros_(self.interaction_proj.bias)
-        nn.init.uniform_(self.interaction_gate.weight, -init_scale, init_scale)
-        nn.init.zeros_(self.interaction_gate.bias)
 
         # 关系偏置（num_relations * 2 = 前向 + 逆向）
         self.rel_bias = nn.Parameter(torch.zeros(num_relations * 2))
@@ -1631,11 +1609,6 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
         s_tan = self.dropout(s_tan)
-        pair_input = torch.cat([s_tan, o_tan], dim=-1)
-        pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
-        # 使用主语-宾语逐维乘积建模二者交互，再由门控控制注入强度
-        pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
-        s_tan = s_tan + pair_gate * pair_context
 
         # 2. 全局旋转与反射
         rot_s = self.givens_rotation(s_tan, self.global_rot)   # (B, d)
@@ -1683,11 +1656,6 @@ class HyperbolicAttHRel(nn.Module):
         s_tan = HyperbolicOps.log_map_zero(s_emb, self.c)
         o_tan = HyperbolicOps.log_map_zero(o_emb, self.c)
         s_tan = self.dropout(s_tan)
-        pair_input = torch.cat([s_tan, o_tan], dim=-1)
-        pair_gate = torch.sigmoid(self.interaction_gate(pair_input))
-        # 与 forward 保持一致：通过逐维乘积捕获 (s, o) 非线性交互
-        pair_context = torch.tanh(self.interaction_proj(s_tan * o_tan))
-        s_tan = s_tan + pair_gate * pair_context
 
         rot_s = self.givens_rotation(s_tan, self.global_rot)
         ref_s = self.givens_reflection(s_tan, self.global_ref)
