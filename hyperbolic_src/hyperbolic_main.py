@@ -181,7 +181,7 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
         normed = np.full_like(abstract_score, 0.5)
     else:
         normed = (abstract_score - abstract_score.min()) / (abstract_score.max() - abstract_score.min())
-    return radius_min + (radius_max - radius_min) * normed
+    return radius_min + (radius_max - radius_min) * (1 - normed)
 
 
 def _clamp_value(value, min_value, max_value):
