@@ -211,6 +211,8 @@ def run_experiment(args):
     
     if args.curvature_warmup_epochs < 0:
         raise ValueError("curvature_warmup_epochs must be non-negative")
+    if args.radius_msg_gamma < 0:
+        raise ValueError("--radius-msg-gamma must be non-negative (use 0 to disable the penalty)")
     if args.curvature < args.curvature_min:
         logger.warning("Curvature is below curvature_min; it will be clamped during training.")
     if args.curvature > args.curvature_max:
@@ -347,6 +349,7 @@ def run_experiment(args):
         est_state_alpha=args.est_state_alpha,
         est_encoder=args.est_encoder,
         use_time_aware_negative=args.use_time_aware_negative,
+        radius_msg_gamma=args.radius_msg_gamma,
     )
 
     # ======= EST: build temporal index and true-tails dict =======
@@ -724,6 +727,10 @@ if __name__ == '__main__':
     parser.add_argument("--radius-max", type=float, default=3.0, help="Maximum static radius")
     parser.add_argument("--radius-lambda", type=float, default=0.02, help="Radius supervision loss weight")
     parser.add_argument("--radius-epsilon", type=float, default=0.1, help="Max temporal radius perturbation")
+    parser.add_argument("--radius-msg-gamma", type=float, default=1.0,
+                        help="Scaling factor γ for radius-difference message weighting: "
+                             "weight = exp(-γ * |Δr|). Default 1.0 (original behaviour). "
+                             "Set to 0 to disable the radius-difference penalty.")
     
     # Encoder settings
     parser.add_argument("--weight", type=float, default=1, help="Weight of static constraint")

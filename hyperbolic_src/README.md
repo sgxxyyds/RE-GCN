@@ -190,6 +190,7 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--radius-max` | Maximum static radius | 3.0 |
 | `--radius-lambda` | Radius supervision loss weight | 0.02 |
 | `--radius-epsilon` | Max temporal radius perturbation | 0.1 |
+| `--radius-msg-gamma` | Scaling factor γ for radius-difference message weighting: `exp(-γ·\|Δr\|)`. Set to 0 to disable | 1.0 |
 | `--disable-residual` | Disable residual temporal radius evolution | False |
 | `--curvature-min` | Minimum curvature for scheduling | 1e-4 |
 | `--curvature-max` | Maximum curvature for scheduling | 1e-1 |
