@@ -79,7 +79,8 @@ class HyperbolicBaseRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, out_dim, num_rels, num_bases=-1,
                  num_hidden_layers=1, dropout=0, c=0.01, self_loop=False,
                  skip_connect=False, encoder_name="hyperbolic_uvrgcn",
-                 rel_emb=None, use_cuda=False, analysis=False):
+                 rel_emb=None, use_cuda=False, analysis=False,
+                 radius_msg_gamma=1.0):
         super(HyperbolicBaseRGCN, self).__init__()
         
         self.num_nodes = num_nodes
@@ -96,6 +97,7 @@ class HyperbolicBaseRGCN(nn.Module):
         self.rel_emb = rel_emb
         self.use_cuda = use_cuda
         self.run_analysis = analysis
+        self.radius_msg_gamma = radius_msg_gamma
         
         self.build_model()
     
@@ -121,7 +123,8 @@ class HyperbolicRGCNCell(HyperbolicBaseRGCN):
         return HyperbolicUnionRGCNLayer(
             self.h_dim, self.h_dim, self.num_rels, self.num_bases,
             c=self.c, activation=act, self_loop=self.self_loop,
-            dropout=self.dropout, skip_connect=sc
+            dropout=self.dropout, skip_connect=sc,
+            radius_msg_gamma=self.radius_msg_gamma
         )
     
     def forward(self, g, init_ent_emb, init_rel_emb):
@@ -186,7 +189,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  hyp_init_scale=1e-3, hyp_score_scale_init=1.0, hyp_score_margin_init=1.0,
                  use_entity_euclidean_bias=False, use_relation_specific_curvature=False,
                  use_est=False, est_state_alpha=0.2,
-                 est_encoder="gru", use_time_aware_negative=False):
+                 est_encoder="gru", use_time_aware_negative=False,
+                 radius_msg_gamma=1.0):
         """
         Args:
             decoder_name: Name of decoder ("hyperbolic_convtranse" | "murp" | "roth" | "atth")
@@ -238,6 +242,9 @@ class HyperbolicRecurrentRGCN(nn.Module):
             est_state_alpha: EMA rate for persistent fast state (H-PES). Default 0.2.
             est_encoder: Temporal backbone for QCHHE: 'gru' or 'transformer'. Default 'gru'.
             use_time_aware_negative: Apply TANS filtering to training negatives. Default False.
+            radius_msg_gamma: Scaling factor γ for radius-difference message weighting.
+                              Message weight = exp(-γ * |Δr|). Default 1.0 (original
+                              behaviour). Set to 0 to disable the radius-difference penalty.
         """
         super(HyperbolicRecurrentRGCN, self).__init__()
         
@@ -272,6 +279,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.candidate_chunk_size = candidate_chunk_size
         self.use_entity_euclidean_bias = use_entity_euclidean_bias
         self.use_relation_specific_curvature = use_relation_specific_curvature
+        self.radius_msg_gamma = radius_msg_gamma
 
         # ============ EST Enhancement Flags ============
         self.use_est = use_est
@@ -355,7 +363,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 num_ents, h_dim, h_dim, num_rels * 2, num_bases,
                 num_hidden_layers, dropout, c=c, self_loop=self_loop,
                 skip_connect=skip_connect, encoder_name=encoder_name,
-                rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis
+                rel_emb=self.emb_rel, use_cuda=use_cuda, analysis=analysis,
+                radius_msg_gamma=radius_msg_gamma
             )
         elif encoder_name == "fhnn":
             self.rgcn = FHNNCell(

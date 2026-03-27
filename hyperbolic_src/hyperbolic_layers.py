@@ -29,7 +29,8 @@ class HyperbolicRGCNLayer(nn.Module):
     """
     
     def __init__(self, in_feat, out_feat, num_rels, num_bases=-1, c=0.01,
-                 activation=None, self_loop=False, dropout=0.0, skip_connect=False):
+                 activation=None, self_loop=False, dropout=0.0, skip_connect=False,
+                 radius_msg_gamma=1.0):
         """
         Args:
             in_feat: Input feature dimension
@@ -41,6 +42,9 @@ class HyperbolicRGCNLayer(nn.Module):
             self_loop: Whether to add self-loop
             dropout: Dropout probability
             skip_connect: Whether to use skip connections
+            radius_msg_gamma: Scaling factor for radius-difference message penalty.
+                              weight = exp(-gamma * |Δr|). Default 1.0 (original
+                              behaviour). Set to 0 to disable the penalty.
         """
         super(HyperbolicRGCNLayer, self).__init__()
         
@@ -52,6 +56,7 @@ class HyperbolicRGCNLayer(nn.Module):
         self.activation = activation
         self.self_loop = self_loop
         self.skip_connect = skip_connect
+        self.radius_msg_gamma = radius_msg_gamma
         
         # Ensure num_bases is valid
         if self.num_bases > self.num_rels:
@@ -94,7 +99,7 @@ class HyperbolicRGCNLayer(nn.Module):
         # Apply relation-specific transformation
         msg = torch.bmm(node, weight).view(-1, self.out_feat)
         radius_diff = torch.abs(edges.src['radius'] - edges.dst['radius'])
-        radius_weight = torch.exp(-radius_diff).squeeze(-1)
+        radius_weight = torch.exp(-self.radius_msg_gamma * radius_diff).squeeze(-1)
         msg = msg * radius_weight.unsqueeze(-1)
         
         return {'msg': msg}
@@ -165,7 +170,8 @@ class HyperbolicUnionRGCNLayer(nn.Module):
     """
     
     def __init__(self, in_feat, out_feat, num_rels, num_bases=-1, c=0.01,
-                 activation=None, self_loop=False, dropout=0.0, skip_connect=False):
+                 activation=None, self_loop=False, dropout=0.0, skip_connect=False,
+                 radius_msg_gamma=1.0):
         """
         Args:
             in_feat: Input feature dimension
@@ -177,6 +183,9 @@ class HyperbolicUnionRGCNLayer(nn.Module):
             self_loop: Whether to add self-loop
             dropout: Dropout probability
             skip_connect: Whether to use skip connections
+            radius_msg_gamma: Scaling factor for radius-difference message penalty.
+                              weight = exp(-gamma * |Δr|). Default 1.0 (original
+                              behaviour). Set to 0 to disable the penalty.
         """
         super(HyperbolicUnionRGCNLayer, self).__init__()
         
@@ -188,6 +197,7 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         self.self_loop = self_loop
         self.skip_connect = skip_connect
         self.rel_emb = None
+        self.radius_msg_gamma = radius_msg_gamma
         
         # Weight for neighbor aggregation
         self.weight_neighbor = nn.Parameter(torch.Tensor(in_feat, out_feat))
@@ -220,7 +230,7 @@ class HyperbolicUnionRGCNLayer(nn.Module):
         # Use F.linear for proper matrix multiplication (handles 2D tensors correctly)
         msg = F.linear(msg, self.weight_neighbor.t())
         radius_diff = torch.abs(edges.src['radius'] - edges.dst['radius'])
-        radius_weight = torch.exp(-radius_diff).squeeze(-1)
+        radius_weight = torch.exp(-self.radius_msg_gamma * radius_diff).squeeze(-1)
         msg = msg * radius_weight.unsqueeze(-1)
         
         return {'msg': msg}
