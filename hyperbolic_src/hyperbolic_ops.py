@@ -415,8 +415,10 @@ class TemporalRadiusEvolution(nn.Module):
             static_radius_tensor = static_radius
             if static_radius_tensor.dim() == x.dim() - 1:
                 static_radius_tensor = static_radius_tensor.unsqueeze(-1)
-        beta = self.anchor_beta
-        base_radius = beta * static_radius_tensor + (1.0 - beta) * dynamic_radius
+        base_radius = (
+            self.anchor_beta * static_radius_tensor
+            + (1.0 - self.anchor_beta) * dynamic_radius
+        )
         if delta_clipped.dim() == x.dim() - 1:
             delta_clipped = delta_clipped.unsqueeze(-1)
         new_radius = base_radius + delta_clipped
@@ -427,7 +429,7 @@ class TemporalRadiusEvolution(nn.Module):
             "dynamic_radius_mean": dynamic_radius.mean().item(),
             "static_radius_mean": static_radius_tensor.mean().item(),
             "base_radius_mean": base_radius.mean().item(),
-            "anchor_beta": beta,
+            "anchor_beta": self.anchor_beta,
             "epsilon": self.epsilon,
         }
         return evolved
