@@ -372,17 +372,21 @@ class TemporalRadiusEvolution(nn.Module):
     r(t) = r_static + Δr(t)
     """
 
-    def __init__(self, dim, c=0.01, epsilon=0.1):
+    def __init__(self, dim, c=0.01, epsilon=0.1, anchor_beta=1.0):
         """
         Args:
             dim: Embedding dimension
             c: Curvature parameter
             epsilon: Maximum perturbation magnitude
+            anchor_beta: Soft anchoring ratio β in [0, 1]
         """
         super(TemporalRadiusEvolution, self).__init__()
         self.dim = dim
         self.c = c
         self.epsilon = epsilon
+        if anchor_beta < 0.0 or anchor_beta > 1.0:
+            raise ValueError("anchor_beta must be in [0, 1]")
+        self.anchor_beta = float(anchor_beta)
         self.radius_mlp = nn.Linear(dim, 1)
         nn.init.xavier_uniform_(self.radius_mlp.weight, gain=0.1)
         nn.init.zeros_(self.radius_mlp.bias)
@@ -402,12 +406,17 @@ class TemporalRadiusEvolution(nn.Module):
         tangent = HyperbolicOps.log_map_zero(x, self.c)
         delta = self.radius_mlp(tangent).squeeze(-1)
         delta_clipped = torch.clamp(delta, min=-self.epsilon, max=self.epsilon)
+        dynamic_radius = HyperbolicOps.get_radius(x)
+        if dynamic_radius.dim() == x.dim() - 1:
+            dynamic_radius = dynamic_radius.unsqueeze(-1)
         if static_radius is None:
-            base_radius = HyperbolicOps.get_radius(x)
+            static_radius_tensor = dynamic_radius
         else:
-            base_radius = static_radius
-        if base_radius.dim() == x.dim() - 1:
-            base_radius = base_radius.unsqueeze(-1)
+            static_radius_tensor = static_radius
+            if static_radius_tensor.dim() == x.dim() - 1:
+                static_radius_tensor = static_radius_tensor.unsqueeze(-1)
+        beta = self.anchor_beta
+        base_radius = beta * static_radius_tensor + (1.0 - beta) * dynamic_radius
         if delta_clipped.dim() == x.dim() - 1:
             delta_clipped = delta_clipped.unsqueeze(-1)
         new_radius = base_radius + delta_clipped
@@ -415,6 +424,10 @@ class TemporalRadiusEvolution(nn.Module):
         self.last_evolution_stats = {
             "delta_mean": delta_clipped.mean().item(),
             "delta_std": delta_clipped.std().item(),
+            "dynamic_radius_mean": dynamic_radius.mean().item(),
+            "static_radius_mean": static_radius_tensor.mean().item(),
+            "base_radius_mean": base_radius.mean().item(),
+            "anchor_beta": beta,
             "epsilon": self.epsilon,
         }
         return evolved

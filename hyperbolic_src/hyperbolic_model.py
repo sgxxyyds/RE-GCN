@@ -183,6 +183,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
                  learn_curvature=False, use_residual_evolution=True,
                  radius_target=None, radius_lambda=0.02,
                  radius_min=0.5, radius_max=3.0, radius_epsilon=0.1,
+                 radius_anchor_beta=1.0,
                  curvature_min=1e-4, curvature_max=1e-1,
                  num_heads=4,
                  query_chunk_size=128, candidate_chunk_size=256,
@@ -228,6 +229,8 @@ class HyperbolicRecurrentRGCN(nn.Module):
             radius_min: Minimum radius for static radius projection
             radius_max: Maximum radius for static radius projection
             radius_epsilon: Max temporal radius perturbation magnitude
+            radius_anchor_beta: Soft anchoring ratio β in radius evolution.
+                                r_base = β * r_static + (1 - β) * r_dynamic.
             curvature_min: Minimum curvature value
             curvature_max: Maximum curvature value
             num_heads: Number of attention heads (for HGAT encoder)
@@ -272,6 +275,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         self.radius_lambda = radius_lambda
         self.radius_min = radius_min
         self.radius_max = radius_max
+        self.radius_anchor_beta = radius_anchor_beta
         self.curvature_min = curvature_min
         self.curvature_max = curvature_max
         self.num_heads = num_heads
@@ -330,7 +334,7 @@ class HyperbolicRecurrentRGCN(nn.Module):
         
         # ============ Temporal Radius Evolution (IMPROVED v3) ============
         self.temporal_radius_evolution = TemporalRadiusEvolution(
-            h_dim, c=c, epsilon=radius_epsilon
+            h_dim, c=c, epsilon=radius_epsilon, anchor_beta=radius_anchor_beta
         )
         
         # ============ Transformation Weights ============
@@ -854,13 +858,15 @@ class HyperbolicRecurrentRGCN(nn.Module):
             # Map back to hyperbolic space
             self.h = HyperbolicOps.exp_map_zero(new_tangent, c)
             self.h = HyperbolicOps.project_to_ball(self.h, c)
-            self.h = HyperbolicOps.apply_radius(self.h, self._static_radius(), c)
-            
+            static_radius = self._static_radius()
+
             # ============ Temporal Radius Evolution (Hyperbolic Innovation) ============
             # Optional: Adjust semantic level based on time (hyperbolic-specific)
             # This is the key innovation of the hyperbolic model
             if self.use_residual_evolution:
-                self.h = self.temporal_radius_evolution(self.h, self._static_radius())
+                self.h = self.temporal_radius_evolution(self.h, static_radius)
+            else:
+                self.h = HyperbolicOps.apply_radius(self.h, static_radius, c)
             
             # Log evolution statistics
             if self.run_analysis and self.use_residual_evolution:
@@ -868,7 +874,11 @@ class HyperbolicRecurrentRGCN(nn.Module):
                 if evolution_stats:
                     logger.debug(
                         f"Time step {i}: radius_delta_mean={evolution_stats.get('delta_mean', 0.0):.4f}, "
-                        f"radius_delta_std={evolution_stats.get('delta_std', 0.0):.4f}"
+                        f"radius_delta_std={evolution_stats.get('delta_std', 0.0):.4f}, "
+                        f"dynamic_radius_mean={evolution_stats.get('dynamic_radius_mean', 0.0):.4f}, "
+                        f"static_radius_mean={evolution_stats.get('static_radius_mean', 0.0):.4f}, "
+                        f"base_radius_mean={evolution_stats.get('base_radius_mean', 0.0):.4f}, "
+                        f"anchor_beta={evolution_stats.get('anchor_beta', self.radius_anchor_beta):.4f}"
                     )
             
             history_embs.append(self.h)
@@ -1107,6 +1117,10 @@ class HyperbolicRecurrentRGCN(nn.Module):
         if evolution_stats:
             summary["radius_delta_mean"] = evolution_stats.get("delta_mean", None)
             summary["radius_delta_std"] = evolution_stats.get("delta_std", None)
+            summary["dynamic_radius_mean"] = evolution_stats.get("dynamic_radius_mean", None)
+            summary["static_radius_mean"] = evolution_stats.get("static_radius_mean", None)
+            summary["base_radius_mean"] = evolution_stats.get("base_radius_mean", None)
+            summary["anchor_beta"] = evolution_stats.get("anchor_beta", self.radius_anchor_beta)
         
         if self.training_stats["time_gate_values"]:
             summary["avg_time_gate"] = sum(self.training_stats["time_gate_values"]) / len(self.training_stats["time_gate_values"])

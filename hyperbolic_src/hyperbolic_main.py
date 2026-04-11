@@ -213,6 +213,8 @@ def run_experiment(args):
         raise ValueError("curvature_warmup_epochs must be non-negative")
     if args.radius_msg_gamma < 0:
         raise ValueError("--radius-msg-gamma must be non-negative (use 0 to disable the penalty)")
+    if args.radius_anchor_beta < 0.0 or args.radius_anchor_beta > 1.0:
+        raise ValueError("--radius-anchor-beta must be in [0, 1]")
     if args.curvature < args.curvature_min:
         logger.warning("Curvature is below curvature_min; it will be clamped during training.")
     if args.curvature > args.curvature_max:
@@ -334,6 +336,7 @@ def run_experiment(args):
         radius_min=args.radius_min,
         radius_max=args.radius_max,
         radius_epsilon=args.radius_epsilon,
+        radius_anchor_beta=args.radius_anchor_beta,
         curvature_min=args.curvature_min,
         curvature_max=args.curvature_max,
         num_heads=args.attn_heads,
@@ -729,6 +732,10 @@ if __name__ == '__main__':
     parser.add_argument("--radius-max", type=float, default=3.0, help="Maximum static radius")
     parser.add_argument("--radius-lambda", type=float, default=0.02, help="Radius supervision loss weight")
     parser.add_argument("--radius-epsilon", type=float, default=0.1, help="Max temporal radius perturbation")
+    parser.add_argument("--radius-anchor-beta", type=float, default=1.0,
+                        help="Soft anchoring ratio β in residual evolution: "
+                             "r_base=β*r_static+(1-β)*r_dynamic, β in [0,1]. "
+                             "β=1 approximates old static-anchor behavior; β=0 prefers dynamic radius.")
     parser.add_argument("--radius-msg-gamma", type=float, default=0.15,
                         help="Scaling factor γ for radius-difference message weighting: "
                              "weight = exp(-γ * |Δr|). Default 1.0 (original behaviour). "
