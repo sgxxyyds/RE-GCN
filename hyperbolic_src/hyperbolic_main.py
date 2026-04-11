@@ -181,7 +181,7 @@ def _compute_radius_targets(triple_snapshots, num_nodes, alpha=0.5, beta=0.5,
         normed = np.full_like(abstract_score, 0.5)
     else:
         normed = (abstract_score - abstract_score.min()) / (abstract_score.max() - abstract_score.min())
-    return radius_min + (radius_max - radius_min) * (1 - normed)
+    return radius_min + (radius_max - radius_min) * normed
 
 
 def _clamp_value(value, min_value, max_value):
@@ -463,7 +463,8 @@ def run_experiment(args):
             f"Adam (欧式参数 {len(euclidean_params)} 个), lr={args.lr}"
         )
     else:
-        # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+        """
         curv_params = []
         base_params = []
         for n, p in model.named_parameters():
@@ -478,6 +479,7 @@ def run_experiment(args):
             {"params": base_params, "lr": args.lr},
             {"params": curv_params, "lr": args.lr * 10}  # 让曲率以更快的速度学习
         ], weight_decay=1e-5)
+        """
         if _use_riemannian and not GEOOPT_AVAILABLE:
             logger.warning("--use-riemannian-adam 已指定但 geoopt 未安装，回退到普通 Adam。")
         logger.info(f"Optimizer: Adam, lr={args.lr}, weight_decay=1e-5")
@@ -727,7 +729,7 @@ if __name__ == '__main__':
     parser.add_argument("--radius-max", type=float, default=3.0, help="Maximum static radius")
     parser.add_argument("--radius-lambda", type=float, default=0.02, help="Radius supervision loss weight")
     parser.add_argument("--radius-epsilon", type=float, default=0.1, help="Max temporal radius perturbation")
-    parser.add_argument("--radius-msg-gamma", type=float, default=1.0,
+    parser.add_argument("--radius-msg-gamma", type=float, default=0.15,
                         help="Scaling factor γ for radius-difference message weighting: "
                              "weight = exp(-γ * |Δr|). Default 1.0 (original behaviour). "
                              "Set to 0 to disable the radius-difference penalty.")
