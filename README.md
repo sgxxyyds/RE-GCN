@@ -35,7 +35,10 @@ Hyperbolic Entity Embeddings (Poincaré Ball)
 ### 2. 半径语义显式化
 - 使用结构统计构造静态半径目标
 - 通过半径监督损失约束语义层级
-- 时间演化仅作残差扰动（`Δr` 有界）
+- 时间演化采用软回锚 + 残差扰动（`Δr` 有界）：  
+  `r_base = β · r_static + (1-β) · r_dynamic`，`r_out = r_base + Δr`
+- 新增参数 `--radius-anchor-beta`（`β∈[0,1]`，默认 `1.0`），
+  `β=1` 近似旧行为（静态主导），`β=0` 为动态主导
 
 ### 3. 双曲 RE-GCN
 - 图卷积在 **切空间** 中进行以保证数值稳定
@@ -401,6 +404,7 @@ python hyperbolic_main.py -d ICEWS14s \
 | `--radius-max` | 静态半径最大值 | 3.0 |
 | `--radius-lambda` | 半径监督损失权重 | 0.02 |
 | `--radius-epsilon` | 时间半径扰动上限 | 0.1 |
+| `--radius-anchor-beta` | 软回锚系数 β（`r_base=βr_static+(1-β)r_dynamic`） | 1.0 |
 | `--curvature-min` | 曲率调度最小值 | 1e-4 |
 | `--curvature-max` | 曲率调度最大值 | 1e-1 |
 | `--verbose` | 启用详细调试日志 | False |
